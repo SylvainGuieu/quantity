@@ -1,6 +1,6 @@
 import math
-from .unitkind import _KindHash_, _KindName_
-
+import ast
+import operator as op
 __all__ = ["kindofunit", "scaleofunit", "unitofunit", "unitofscale", "hashofkind",
             "hashofunit", 
             "unitof", "kindof", "valueof", "scaleof", "isunitless", "unitsofkind",
@@ -13,8 +13,719 @@ __all__ = ["kindofunit", "scaleofunit", "unitofunit", "unitofscale", "hashofkind
 ##
 # This is the the global list available when unit or kind defintion 
 # are entered as a string 
+NoneUnit = ''#None
+NoneKind = ''#None
+MixedSystem = 'mixed'
+Hunitless = 1.0
+UnitLess = "_"
+KindUnitLess = "_"
+
 
 eval_globals = {"math": math}
+
+M_PYTHON, M_SCALE, M_NAME, M_PRINT, M_LATEX, M_HTML = range(6)
+BASE_M = ['',1.0,'','','','']
+K_NAME, K_PYTHON, K_DEFINITION, K_BASE, K_H, K_ALTH = range(6)
+
+BASE_K = ['','','1.0','',1.0, []]
+(UB_UNIT, UB_NAME, UB_PRINT, UB_LATEX, UB_HTML, UB_DEFINITION,
+ UB_SYSTEM, UB_K) = range(8)
+
+BASE_UB = ['', '', '', '', '', '', '', BASE_K]
+U_BASE, U_METRIX, U_PYTHON, U_SCALE, U_DIMENSION = range(5)
+BASE_U = [BASE_UB, BASE_M, '', 1.0, 1]
+
+#(U_UNIT, U_NAME, U_PRINT, U_LATEX, U_HTML, U_DEFINITION, U_KIND, U_METRIX,
+ #U_SCALE, U_SYSTEM, U_DIMENSION, U_ISMETRIX, U_H) = range(13)
+C_IU, C_OU, C_PYTHON = range(3)
+
+
+##################################################
+#
+# Parser Classes  
+#
+###################################################
+
+#from .parser import conv, fconv
+
+def hrounder(h):    
+    return round(h,33)
+
+class UnitError(NameError):
+    pass    
+
+class BadOpError(SyntaxError):
+    pass
+
+def _extract_nameerror(e):
+    try:
+        return str(e).split("name ")[1].split(" is ")[0]
+    except:
+        return e    
+
+class RegisterError(ValueError):
+    pass    
+
+
+# unsupported operators
+def _bnl(sign):
+    def tmp(a,b):
+        raise BadOpError("Operator %s not allowed in unit or kind description"%sign)
+    return tmp        
+
+operators = {
+             ast.Add: _bnl("+"), 
+             ast.Sub: _bnl("-"), 
+             ast.BitXor: _bnl("~"), 
+             ast.Or:  _bnl("|"), 
+             ast.And: _bnl("|"), 
+             ast.Mod: _bnl("%"),
+             ast.Mult: op.mul,
+             ast.Div: op.truediv, 
+             ast.Pow: op.pow,
+             ast.FloorDiv: op.truediv,              
+             ast.USub: op.neg, 
+             ast.UAdd: lambda a:a             
+            }
+
+class Parser(object):
+    """ Parse a unit expression to its kind scale 
+
+    e.g. :  "m/s"  -> 1.0
+            "km/h" -> 3.6
+    """
+    def __init__(self, R):
+        # save the register
+        self.R = R 
+        # The default operators
+        self.operators = dict(operators)
+        # Populate the operators with the one defined in this class
+        self.init_op()
+        self.buff = {}
+
+    def init_op(self):
+        """ Populate the operators with the one defined in this class
+            They are matched by name    
+        """    
+        for a,f in [(ast.Num,"Num"), (ast.Mult,"Mult"), 
+                    (ast.Div,"Div"), 
+                    (ast.FloorDiv,"FloorDiv"), 
+                    (ast.Pow, "Pow")                  
+                  ]:
+            if hasattr(self, f):
+                self.operators[a] = getattr(self, f)        
+
+    def Name(self, name):
+        raise NotImplementedError("Name")            
+
+    def Num(self, x):
+        return x
+
+    def wrap(self, output):
+        return output    
+
+    def eval(self, expr):
+        try:
+            r = self.Name(expr)
+        except UnitError:            
+            try:
+                r = self.eval_(ast.parse(expr, mode='eval').body)
+            except KeyError as e:
+                raise UnitError("Unit %r is not registered"%e)
+            #except TypeError as e:                
+            #    raise UnitError("Unit expression is limited to simple mathematical expression, '%s' is not understood"%expr) 
+            except BadOpError as e:
+                raise BadOpError(e)
+            else:
+                return self.wrap(r)    
+        else:
+            return self.wrap(r)
+
+    def eval_(self, node):    
+        if isinstance(node, ast.Num): # <number>
+            return self.Num(node.n)
+        elif isinstance(node, ast.BinOp): # <left> <operator> <right>            
+            return self.operators[type(node.op)](self.eval_(node.left), self.eval_(node.right))
+        elif isinstance(node, ast.UnaryOp): # <operator> <operand> e.g., -1
+            return self.operators[type(node.op)](self.eval_(node.operand))
+        elif isinstance(node, ast.Attribute):
+            return self.Attribute(node.value, node.attr) 
+
+        elif isinstance(node, ast.Name):
+            return self.Name(node.id) 
+
+        else:
+            raise TypeError(node)        
+ 
+    def Attribute(self, left, right):
+        """ allow only a attribute call to math, for e.i math.pi 
+            however no function call is allowed like math.acos(-1)
+        """        
+        if not isinstance(left, ast.Name) or left.id!="math":
+            raise TypeError("only math module allowed in unit definition")
+        return getattr(math, right)
+
+class ScaleParser(Parser):
+    def Name(self, name):
+        """ Name is the unit scale """
+        try:
+            return self.R.unit_lookup[name][U_SCALE]    
+        except KeyError as e:
+            raise UnitError("Unit %r is not registered"%name)
+
+class MetrixScaleParser(Parser):
+    def Name(self, name):
+        """ Name is the unit scale """
+        try:
+            return self.R.metrix_lookup[name][M_SCALE]    
+        except KeyError as e:
+            raise UnitError("Metrix %r is not registered"%name)
+
+
+class UnitHParser(Parser):
+    def Name(self, name):
+        try:
+            return self.R.unit_lookup[name][U_BASE][U_K][K_H]    
+        except KeyError as e:
+            raise UnitError("Unit %r is not registered"%name)
+            
+class KindHParser(Parser):
+    def Name(self, name):
+        try:
+            v = self.R.kind_lookup[name][K_H] 
+        except KeyError:
+            raise UnitError("Kind %r is not registered"%name)               
+        else:
+            return v            
+    def Num(self, n):
+        return n
+        
+
+GK_K, GK_D, GK_O = range(3)
+class KindSpliter(Parser):
+
+    def wrap(self,K):
+        if not isinstance(K, list):
+            if K!=1.0:
+                raise KindError("%s not allowed in kind definition"%K)
+            K = [(BASE_K, 1, "")]
+        return SplitedKind(K)
+
+                        
+    def Name(self, name):
+        try:
+            K = self.R.kind_lookup[name] 
+        except KeyError:
+            raise UnitError("Kind %r is not registered"%name)               
+        else:
+            return [(K,1,"")]
+    
+    def Mult(self, left, right):
+        if isinstance(left, list) and isinstance(right, list):
+            for il, (LK,LDIM,LOP) in enumerate(left):
+                for ir, (RK,RDIM,ROP) in enumerate(list(right)):
+                    if LK is RK:
+                        left[il] = (LK,LDIM+RDIM,LOP)
+                        right.pop(ir)
+            if right:
+                RK,RDIM,ROP = right[0]
+                right[0] = RK,RDIM,"*"                   
+            return left+right
+        
+        if isinstance(right, list):
+            if left!=1.0:
+                raise BadOpError("In kind definition multiplication by constant is not allowed")                
+            
+            RK,RDIM,ROP = right[0]    
+            right[0] = RK,RDIM,"*"
+            return right
+
+        if isinstance(left, list):
+            if right!=1.0:
+                raise BadOpError("In kind definition multiplication by constant is not allowed")                
+            return left 
+                
+        return 1.0    
+
+    def Div(self, left, right):
+        if isinstance(left, list) and isinstance(right, list):
+            for il, (LK,LDIM,LOP) in enumerate(left):
+                for ir, (RK,RDIM,ROP) in enumerate(list(right)):
+                    if LK is RK:
+                        left[il] = (LK,LDIM-RDIM,LOP)
+                        right.pop(ir)
+                    #else:
+                    #    right[ir] = (RK,-RDIM,"/")
+            right = [(RK,-RDIM,"/") for (RK,RDIM,ROP) in right]                        
+            return left+right
+        
+
+        if isinstance(right, list):
+            if left!=1.0:
+                raise BadOpError("In kind definition multiplication by constant is not allowed")                
+            
+            # reverse the dimension sign of all child
+            return [(RK,-RDIM,"/") for (RK,RDIM,ROP) in right]
+
+        if isinstance(left, list):
+            if right!=1.0:
+                raise BadOpError("In kind definition multiplication by constant is not allowed")                
+            return left  
+        return 1.0 
+
+    FloorDiv = Div
+
+    def Pow(self, left, right):
+        if isinstance(right,list):
+            raise BadOpError("kind in exponant isn't allowed")
+        if isinstance(left, list):            
+            return [(LK,LDIM*right,LOP) for LK,LDIM,LOP in left]                 
+        if left**right != 1.0:
+            raise BadOpError("In kind definition multiplication by constant is not allowed")            
+
+class SplitedKind(object):
+    def __init__(self, K):
+        self.K = K
+
+    @staticmethod
+    def _hash(h,T):
+        ## round problem when doing a negative exponant
+        ## need to divide instead of **-1        
+        if T[GK_D]<0:      
+            return h/(T[GK_K][K_H]**-T[GK_D])
+        return h*T[GK_K][K_H]**T[GK_D]
+
+    def get_hash(self):
+        return hrounder(reduce(self._hash, self.K, 1.0))
+
+    @staticmethod
+    def _althash(h,T):
+        if T[GK_D]<0:      
+            return h/(T[GK_K][K_ALTH][-1] if T[GK_K][K_ALTH] else T[0][K_H])**-T[1]
+        return h*(T[GK_K][K_ALTH][-1] if T[GK_K][K_ALTH] else T[0][K_H])**T[1]
+    def get_althash(self):
+        return hrounder(reduce(self._althash, self.K, 1.0))
+    
+    @staticmethod
+    def _name(name,T):
+        d = -T[GK_D] if T[GK_O]=="/" else T[GK_D]
+        o = "/" if T[GK_O]=="/" else ("." if T[GK_O]=="*" else "")        
+        if d!=1:
+            return "%s%s%s%s"%(name, o, T[GK_K][K_PYTHON], d)
+        return "%s%s%s"%(name, o, T[GK_K][K_PYTHON])
+
+    def get_name(self):
+        return reduce(self._name, self.K, "")
+    
+    @staticmethod
+    def _python(name,T):
+        d = -T[GK_D] if T[GK_O]=="/" else T[GK_D]
+        o = T[GK_O]
+        if d!=1:
+            return "%s%s%s**%s"%(name, o, T[GK_K][K_PYTHON], d)
+        return "%s%s%s"%(name, o, T[GK_K][K_PYTHON])
+
+    def get_python(self):
+        return reduce(self._python, self.K, "")
+
+
+    
+    @staticmethod
+    def _baseunit(name,T):
+        d = -T[GK_D] if T[GK_O]=="/" else T[GK_D]
+        o = T[GK_O]
+        if d!=1:
+            return "%s%s%s**%s"%(name, o, T[GK_K][K_BASE], d)
+        return "%s%s%s"%(name, o, T[GK_K][K_BASE])    
+
+    def get_baseunit(self):
+        return reduce(self._baseunit, self.K, "")    
+
+    def get(self, *args):
+        return (getattr(self,"get_"+a)() for a in args)              
+
+
+
+
+GU_U, GU_D, GU_O = range(3)
+class UnitSpliter(Parser):
+    def wrap(self,U):
+        if not isinstance(U, list):
+            U = [([BASE_UB, BASE_M, str(U), U, 1], 1, "")]
+        return SplitedUnit(U)
+
+    def Name(self, name):
+        try:
+            U = self.R.unit_lookup[name] 
+        except KeyError:
+            raise UnitError("Unit %r is not registered"%name)               
+        else:
+            # Unit definition, scale, dimention, prefered operator
+            return [(U, 1,"")]
+        
+    def Mult(self, left, right):
+        if not isinstance(left, list):
+            left = [([BASE_UB, BASE_M, str(left), left, 1], 1, "")]
+        if not isinstance(right, list):
+            right = [([BASE_UB, BASE_M, str(right), right, 1], 1, "")]    
+
+        
+        for il, (LU, LDIM,LOP) in enumerate(left):
+            for ir, (RU, RDIM,ROP) in enumerate(list(right)):
+                if LU is RU:
+                    left[il] = (LU, LDIM+RDIM,LOP)
+                    right.pop(ir)
+        if right:
+            RU,RDIM,ROP = right[0]
+            right[0] = RU,RDIM,"*"
+        return left+right         
+
+    def Div(self, left, right):
+        if not isinstance(left, list):
+            left = [([BASE_UB, BASE_M, str(left), left, 1], 1, "")]
+        if not isinstance(right, list):
+            right = [([BASE_UB, BASE_M, str(right), right, 1], 1, "")]    
+
+        
+        for il, (LU,LDIM,LOP) in enumerate(left):
+            for ir, (RU,RDIM,ROP) in enumerate(list(right)):
+                if LU is RU:
+                    left[il] = (LU,LDIM-RDIM,LOP)
+                    right.pop(ir)
+                #else:
+                #    right[ir] = (RK,-RDIM,"/")
+        right = [(RU,-RDIM,"/") for (RK,RDIM,ROP) in right]                        
+        return left+right        
+    FloorDiv = Div
+
+    def Pow(self, left, right):
+        if isinstance(right,list):                        
+            raise BadOpError("unit in exponant isn't allowed")
+           
+        if isinstance(left, list):            
+            return [(LK,LDIM*right,LOP) for LK,LDIM,LOP in left]                 
+        return left*right  
+
+
+
+
+def _real_name(T, iu, im):
+    U = T[GU_U][U_BASE]
+    uname = U[iu] if U[iu] else T[GU_U][U_PYTHON]
+           
+    M = T[GU_U][U_METRIX]
+    mname = M[im] if M[im] else M[M_PYTHON]
+    return mname, uname
+class SplitedUnit(object):
+    def __init__(self, U):        
+        self.U = U
+
+    @staticmethod
+    def _hash(h,T): 
+        ## round problem when doing a negative exponant
+        ## need to devide instead of **-1        
+        if T[GU_D]<0:        
+            return h/((T[GU_U][U_BASE][UB_K][K_H])**-T[GU_D])
+        return h*(T[GU_U][U_BASE][UB_K][K_H])**T[GU_D]
+    def get_hash(self):
+        return hrounder(reduce(self._hash, self.U, 1.0))
+
+    @staticmethod
+    def _althash(h,T):
+        alth = T[GU_U][U_BASE][UB_K][K_ALTH]
+        if T[GU_D]<0:       
+            return h/(alth[-1] if alth else T[GU_U][U_BASE][UB_K][K_H])**-T[GU_D]
+        return h*(alth[-1] if alth else T[GU_U][U_BASE][UB_K][K_H])**T[GU_D]
+
+    def get_althash(self):
+        return hrounder(reduce(self._althash, self.U, 1.0))
+                
+    @staticmethod
+    def _name(name,T):
+        if T[GU_D]==0:
+            return name        
+        d = -T[GU_D] if T[GU_O]=="/" else T[GU_D]
+        o = "per" if T[GU_D]<0 else ""
+        
+        mname, uname = _real_name(T, UB_NAME, M_NAME)
+        if mname:
+            rname = "%s%s"%(mname,uname)
+        else:
+            rname = uname
+
+        if not rname:
+            return name
+        
+        d *= T[GU_U][U_DIMENSION]
+
+        if abs(d)==1:
+            return "%s%s%s"%(rspacer(name), rspacer(o), rname)
+        elif abs(d)==2:
+            return "%s%ssquare %s"%(rspacer(name), rspacer(o), rname)
+        elif abs(d)==3:
+            return "%s%scubic %s"%(rspacer(name), rspacer(o), rname)
+        else:    
+            return "%s%s%s^%s"%(rspacer(name), rspacer(o), rname, abs(d))
+
+        
+    def get_name(self):
+        return reduce(self._name, self.U, "")
+    
+
+    @staticmethod
+    def _latex(name,T):
+        if T[GU_D]==0:
+            return name  
+
+        d = -T[GU_D] if T[GU_O]=="/" else T[GU_D]
+        o = "/" if T[GU_O]=="/" else ("." if T[GU_O]=="*" else "")        
+        
+        mname, uname = _real_name(T, UB_LATEX, M_LATEX)
+        if mname:
+            rname = "%s %s"%(mname,uname)
+        else:
+            rname = uname
+            
+        if not rname:
+            return name
+
+        d *= T[GU_U][U_DIMENSION]    
+
+        if d!=1:
+            return "%s%s%s^{%s}"%(rspacer(name), rspacer(o), rname, d)
+        return "%s%s%s"%(rspacer(name), rspacer(o), rname)
+        
+    def get_latex(self):
+        return reduce(self._latex, self.U, "")    
+
+    @staticmethod
+    def _print(name,T):
+        if T[GU_D]==0:
+            return name
+
+        d = -T[GU_D] if T[GU_O]=="/" else T[GU_D]
+        o = "/" if T[GU_O]=="/" else ("." if T[GU_O]=="*" else "")        
+        
+        mname, uname = _real_name(T, UB_PRINT, M_PRINT)
+        if mname:
+            rname = "%s%s"%(mname,uname)
+        else:
+            rname = uname
+            
+        if not rname or rname=="1.0":
+            return name
+
+        d *= T[GU_U][U_DIMENSION]
+
+        if d!=1:
+            return "%s%s%s%s"%((name), (o), rname, d)
+        return "%s%s%s"%((name), (o), rname)
+        
+    def get_print(self):
+        return reduce(self._print, self.U, "")     
+
+
+    @staticmethod
+    def _python(name,T):
+        if T[GU_D]==0:
+            return name
+        d = -T[GU_D] if T[GU_O]=="/" else T[GU_D]
+        o = T[GU_O]
+        if d!=1:
+            return "%s%s%s**%s"%(name, o, T[GU_U][U_PYTHON], d)
+        return "%s%s%s"%(name, o, T[GU_U][U_PYTHON])
+
+    def get_python(self):
+        return reduce(self._python, self.U, "")
+
+    @staticmethod
+    def _scale(s, T):
+        return s*(T[GU_U][U_SCALE])**T[GU_D]
+
+    def get_scale(self):
+        return reduce(self._scale, self.U, 1.0)    
+    
+
+    @staticmethod
+    def _dimension(dims, T):
+        kind = T[GU_U][U_BASE][UB_K][K_PYTHON]
+        dims[kind] = dims.setdefault(kind,0) + T[GU_D]
+        return dims
+
+    def get_dimensions(self):
+        return reduce(self._dimension, self.U, {})    
+    
+
+    @staticmethod
+    def _system(sys, T):
+        ns = T[GU_U][U_BASE][UB_SYSTEM]
+        if ns and sys and ns!=sys:
+            return MixedSystem
+        else:
+            return sys or ns 
+
+    def get_system(self):
+        return reduce(self._system, self.U, "")
+
+    def get(self, *args):
+        return (getattr(self,"get_"+a)() for a in args)              
+
+
+
+def _decompose(R, U, depth=0):
+    #U = R.unitparser.eval(unit).U
+    if not depth:
+        return U
+
+    out = []
+    found = False
+    for T in U:
+        deff = T[GU_U][U_BASE][UB_DEFINITION]
+        mscale = T[GU_U][U_METRIX][M_SCALE]
+        if deff and deff not in ["1.0", "1"]:
+            found = True
+            
+            if T[GU_D]==1:
+                if mscale!=1.0:
+                    deff = "%s*%s"%(mscale,deff)
+            else:
+                if mscale!=1.0:
+                    deff = "%s*(%s)**%s"%(mscale,deff,T[GU_D])        
+                else:
+                    deff = "(%s)**%s"%(deff,T[GU_D])    
+                        
+            new = _decompose(R, R.unitparser.eval(deff).U, depth-1)            
+            if new:
+                u,d,op = new[0]                        
+                new[0] = u,d,T[GU_O]                
+            out.extend(new)
+        elif mscale!=1:
+            deff = "%s*%s"%(mscale,T[GU_U][U_BASE][UB_UNIT])
+            new = _decompose(R, R.unitparser.eval(deff).U, depth-1)            
+            if new:
+                u,d,op = new[0]                        
+                new[0] = u,d,T[GU_O]                
+            out.extend(new)                    
+        else:
+            out.append(T)            
+    return _decompose(R, out, (depth-1)*found)
+
+def decompose(R, unit, depth=0):
+    U = R.unitparser.eval(unit).U
+    # out = []
+    # scale = 1.0
+    # for T in U:
+    #     if T[GU_U][U_BASE][UB_K][K_H]==1.0:
+    #         scale *= T[GU_U][U_SCALE]
+    #     else:
+    #         out.append(T)
+
+    # if scale!=1.0:    
+    #     out = R.unitparser.eval("%s"%scale).U+out  
+    # U = out            
+    U = _decompose(R, U, depth)
+    return R.unitparser.eval( SplitedUnit(U).get_python() )
+
+def decomposition(R, unit):
+    out = [unit]
+    prev = ""
+    new  = unit
+    while prev!=new:
+        prev = new
+        new = decompose(R, prev, depth=1).get_python()
+        if new!=prev:
+            out.append(unitcode(R, new))
+    return out
+
+        
+def group(R, su1, su2):
+    pairs = []
+    rest1 = []
+    rest2 = []
+    d1 = list(su1)
+    d2 = list(su2)
+
+    for i1, (U1, dim1, op1) in enumerate(list(d1)):
+        K1 = U1[U_BASE][UB_K]
+        K1A = K1[K_ALTH]
+        for i2 ,(U2, dim2, op2) in enumerate(list(d2)):
+
+            K2 = U2[U_BASE][UB_K]
+            H2 = K2[K_H]
+            H1 = K1[K_H]
+            K2A = K2[K_ALTH]
+            
+
+            H1B = K1A[-1] if K1A else H1
+            H2B = K2A[-1] if K2A else H2
+            
+            if H1B==H2B and H2 in K1A:                    
+                T1 = H1
+                convertors = []
+                for T2 in K1A[:K1A.index(H2)+1]:
+                    
+                    try:
+                        c = R.convertor_lookup[(T1,T2)]
+                    except KeyError:
+                        pass                            
+                    else:                            
+                        convertors.append(c)
+                    T1=T2    
+                if convertors:
+                    pairs.append( [[U1,dim1,op1],
+                                   [U2,dim2,op2],                                  
+                                  _make_convertor(R, convertors)]
+                                  )
+                    d1.pop(i1)
+                    d2.pop(i2)
+                    continue   
+
+            
+            if H1B==H2B and H1 in K2A:                    
+                T1 = H1
+                convertors = []                    
+                for T2 in (K2A[:K2A.index(T1)+1][::-1])+[H2]:
+                    
+                    try:
+                        c = R.convertor_lookup[(T1,T2)]
+                    except KeyError:
+                        pass
+                    else:
+                        convertors.append(c)
+                    T1 = T2    
+                if convertors:
+
+                    pairs.append([[U1,  dim1, op1],
+                                  [U2,  dim2, op2],
+                                  _make_convertor(R, convertors)])
+                    d2.pop(i2) 
+                    d1.pop(i1)   
+                    continue 
+    return SplitedUnit(d1), SplitedUnit(d2), pairs      
+
+                                                                                          
+
+                                                                            
+
+def _make_convertor(R, convertors):
+    def convertor(value, unit, outputunit):
+        for iu,ou,c in convertors:
+            if unit!=iu:
+                value *= R.unit_lookup[unit][U_SCALE]/R.unit_lookup[iu][U_SCALE]                
+            value = c(value)
+            unit = ou
+        if ou!=outputunit:
+            value *= R.unit_lookup[ou][U_SCALE]/R.unit_lookup[outputunit][U_SCALE]            
+        return value
+    return convertor            
+
+#############################################################
+#
+# Registery 
+#
+#############################################################
+
+
 
 class Registery(object):
     __isglobal__ = False
@@ -28,30 +739,40 @@ class Registery(object):
         ## need a fast access from H to kind 
         self.hash2kind_lookup = {}    
         # we need a fast access to wish kind,scale pairs give a unit
-        self.scale2unit_lookup = {} 
+        self.scale2unit_lookup = {}
+        # also organize the unit by kind/system
+        self.scale2systemunit_lookup = {}
+
 
         # units
         self.unit_lookup = {}    
                 
         # convertor
         self.convertor_lookup = {}
-
+        self._init_parser()
         ## save some time to the interpretor build them 
         ## before
-        self.interp_kindhash = Interpretor(self,"kindhash").eval
-        self.interp_kindhash = Interpretor(self, "kindhash").eval
-        self.interp_unithash = Interpretor(self, "unithash").eval
-        self.interp_unitlesshash = Interpretor(self, "unitlesshash").eval
-        self.interp_unitkindname = Interpretor(self, "unitkindname").eval
-        self.interp_kindname = Interpretor(self, "kindname").eval
-        self.interp_kindbase = Interpretor(self, "kindbase").eval
-        self.interp_scale    = Interpretor(self, "scale").eval
-        self.interp_dimension   = Interpretor(self, "dimension").eval
+    def _init_parser(self):
+        self.unitparser = UnitSpliter(self)
+        self.kindparser = KindSpliter(self)
+                
+    
 
-    def iterunits(self):
+    def iterunits(self, kind=None):
         """ iterrator on unit string names """
-        for u in self.unit_lookup:
-            yield u     
+        if kind:
+            H = self.kindparser.eval(kind).get_hash()
+            try:
+                K = self.hash2kind_lookup[H]
+            except KeyError:
+                return
+            else:        
+                for u,i in self.unit_lookup.iteritems():            
+                    if K is i[U_BASE][UB_K]: 
+                        yield u     
+        else:
+            for u in self.unit_lookup:            
+                yield u
 
     def iterkinds(self):
         """ iterator on kind string names """
@@ -60,228 +781,29 @@ class Registery(object):
 
 
 def parentize(s):
-    if any(o in s for o in "*/+-"):
+    if isinstance(s, basestring) and any(o in s for o in "*/+-"):
         return "(%s)"%s
     return s
 
-##################################################
-#
-# define here the key classes for kind computation  
-#
-###################################################
-class Interpretor(object):
-    def __init__(self, R, context):
-        self.R = R        
-        context_parser_lookup = {
-            "kindhash": lambda r,i: _KindHash_(i[K_H]), 
-            "unithash": lambda r,i: _KindHash_(i[U_H]),
-            "unitlesshash": lambda r,i: _KindHash_(1.0 if r.kind_lookup[i[U_KIND]][K_ULESS] else i[U_H]),
-            "unitkindname": lambda r,i: _KindName_(r, i[U_KIND]),
-            "kindname": lambda r,i: _KindName_(r,i[K_NAME]),
-            "kindbase": lambda r,i: _UnitName_(i[K_BASE]),
-            "scale": lambda r,i: i[U_SCALE],
-            "dimension": lambda r,i: _UnitDimension_({i[U_KIND]:i[U_DIMENSION]})
-        }
-        context_dict_lookup = {
-           "kindhash": lambda r:r.kind_lookup, 
-           "unithash": lambda r:r.unit_lookup,
-           "unitlesshash": lambda r:r.unit_lookup,
-           "unitkindname": lambda r:r.unit_lookup,
-           "kindname": lambda r:r.kind_lookup,  
-           "kindbase": lambda r:r.kind_lookup,
-           "scale": lambda r:r.unit_lookup, 
-           "dimension":lambda r:r.unit_lookup,  
-        }
-        context_return_lookup ={
-           "kindhash": lambda o: getattr(o,"H", o),
-           "unithash": lambda o: getattr(o,"H", o),
-           "unitlesshash": lambda o: getattr(o,"H",o),
-           "unitkindname": lambda o: getattr(o,"name",None),
-           "kindname": lambda o: getattr(o,"name",None),
-           "kindbase": lambda o: getattr(o,"name",None),
-           "scale": lambda o:o, 
-           "dimension": lambda o: dict((k,d) for k,d in getattr(o, "dimensions", {}).iteritems() if d)
-        }
-        self.d = context_dict_lookup[context](R)        
-        self.f = context_parser_lookup[context]
-        self.o = context_return_lookup[context]
+def texparentize(s):
+    if isinstance(s, basestring) and any(o in s for o in "*/+-."):
+        return "(%s)"%s
+    return s    
 
-    def __getitem__(self, item):
-        return self.f(self.R, self.d[item])
-    def __contains__(self, item):
-        return item in self.d
-
-    def keys(self):
-        return self.d.keys()
-
-    def eval(self, s):
-        return self.o(eval(s, eval_globals, self))
+def rspacer(s):
+    if s:
+        return s+" "
+    return s    
+def lspacer(s):
+    if s:
+        return " "+s
+    return s    
+def spacer(s):
+    if s:
+        return " "+s+" "
+    return s
         
-class _KindHash_(object):
-    def __init__(self, H):
-        self.H = float(H)
-
-    def __mul__(self, right):
-        if isinstance(right, _KindHash_):
-            return _KindHash_(self.H*right.H)    
-        return self
-    
-    def __rmul__(self, left):
-        if isinstance(left, _KindHash_):
-            return _KindHash_(left.H*self.H)    
-        return self
-
-    def __div__(self, right):
-        if isinstance(right, _KindHash_):
-            return _KindHash_(self.H/right.H)    
-        return self
-    __truediv__ = __div__
-
-    def __rdiv__(self, left):        
-        if isinstance(left, _KindHash_):
-            return _KindHash_(left.H/self.H) 
-        return _KindHash_(1.0/self.H)
-
-    __rtruediv__ = __rdiv__
-
-    def __pow__(self, right):
-        return _KindHash_(self.H**right)    
-
-
-class _UnitDimension_(object):
-    def __init__(self, dimensions):
-        self.dimensions = dict(dimensions)
-                
-    def __mul__(self, right):
-
-        if isinstance(right, _UnitDimension_):
-            d = dict(self.dimensions)
-            for kind,dim in right.dimensions.iteritems():
-                if kind in self.dimensions:                    
-                    d[kind] += dim
-                else:                    
-                    d[kind] = dim
-
-            return _UnitDimension_(d)    
-        return self
-    
-    def __rmul__(self, left):
-        return self.__mul__(left)        
-    
-    def __div__(self, right):
-        if isinstance(right, _UnitDimension_):
-            d = dict(self.dimensions)
-            for kind, dim in right.dimensions.iteritems():
-                if kind  in self.dimensions:                    
-                    d[kind] -= dim
-                else:                    
-                    d[kind] = -dim
-            return _UnitDimension_(d)    
-        return self
-
-    __truediv__ = __div__
-
-    def __rdiv__(self, left):
-        d = dict(self.dimensions)
-        for k,dim in d.iteritems():
-            d[k] = -dim
-
-        return left*_UnitDimension_(d)
-
-    __rtruediv__ = __rdiv__
-
-    def __pow__(self, right):
-        d = dict(self.dimensions)
-        for k,dim in d.iteritems():
-            d[k] *= right
-        return _UnitDimension_(d)
-
-
-
-class _KindName_(object):
-    def __init__(self, R, name):
-        self.name = str(name)
-        self.R = R
-
-    def __mul__(self, right):
-        if isinstance(right, _KindName_):
-            if right.name==self.name:
-                return _KindName_(self.R, kindofkind(self.R, "%s**2"%parentize(right.name)))
-            return _KindName_(self.R, kindofkind(self.R, "%s*%s"%(self.name,right.name)))
-        return self
-    
-    def __rmul__(self, left):
-        if isinstance(left, _KindName_):
-            if left.name==self.name:
-                return _KindName_(self.R, kindofkind(self.R, "%s**2"%parentize(left.name)))
-            return _KindName_(self.R, kindofkind(self.R, "%s*%s"%(left.name,self.name)))
-        return self
-
-    def __div__(self, right):
-        if isinstance(right, _KindName_):
-            return _KindName_(self.R, kindofkind(self.R, "%s/%s"%(parentize(self.name), parentize(right.name))))
-        return self
-    __truediv__ = __div__
-
-    def __rdiv__(self, left):        
-        if isinstance(left, _KindName_):
-            return _KindName_(self.R, kindofkind(self.R, "%s/%s"%(parentize(left.name), parentize(self.name))))
-        return _KindName_(self.R, kindofkind(self.R, "1/%s"%parentize(self.name)))
-
-    __rtruediv__ = __rdiv__
-
-    def __pow__(self, right):
-        return _KindName_(self.R, kindofkind(self.R, "%s**%s"%(parentize(self.name),right)))
-
-dummy = lambda x:x
-class _UnitName_(object):
-    def __init__(self, name):
-        self.name = str(name)
-
-    def __mul__(self, right):
-        if isinstance(right, _UnitName_):
-            if right.name==self.name:
-                return _UnitName_(dummy("%s**2"%parentize(right.name)))
-            return _UnitName_(dummy("%s*%s"%(self.name,right.name)))
-        return self
-    
-    def __rmul__(self, left):
-        if isinstance(left, _UnitName_):
-            if left.name==self.name:
-                return _UnitName_(dummy("%s**2"%parentize(left.name)))
-            return _UnitName_(dummy("%s*%s"%(left.name,self.name)))
-        return self
-
-    def __div__(self, right):
-        if isinstance(right, _UnitName_):
-            return _UnitName_(dummy("%s/%s"%(parentize(self.name), parentize(right.name))))
-        return self
-    __truediv__ = __div__
-
-    def __rdiv__(self, left):        
-        if isinstance(left, _UnitName_):
-            return _UnitName_(dummy("%s/%s"%(parentize(left.name), parentize(self.name))))
-        return _UnitName_(dummy("1/%s"%parentize(self.name)))
-
-    __rtruediv__ = __rdiv__
-
-    def __pow__(self, right):
-        return _UnitName_(dummy("%s**%s"%(parentize(self.name),right)))
-
-
-
-
-
-
-
-##############################################################
-#
-#  unit the lookup tables
-#
-#############################################################
-
-
-
+htmlparentize = texparentize
 
 ######################################################################################
 #
@@ -290,24 +812,8 @@ class _UnitName_(object):
 ######################################################################################
 
 
-class UnitError(NameError):
-    pass
-def _extract_nameerror(e):
-    try:
-        return str(e).split("name ")[1].split(" is ")[0]
-    except:
-        return e    
 
-class RegisterError(ValueError):
-    pass    
-
-M_PYTHON, M_SCALE, M_NAME, M_PRINT, M_LATEX = range(5)
-K_NAME, K_PYTHON, K_DEFINITION, K_BASE, K_ULESS, K_H = range(6)
-(U_UNIT, U_NAME, U_PRINT, U_DEFINITION, U_KIND, U_METRIX,
- U_SCALE, U_DIMENSION, U_ISMETRIX, U_H) = range(10)
-
-
-def make_metrix(R, metrix, scale, name=None, prt=None, latex=None, callback=None):
+def make_metrix(R, metrix, scale, name=None, prt=None, latex=None, html=None, callback=None):
     """ add a new metrik prefix for metrix units 
 
     Parameters
@@ -326,7 +832,11 @@ def make_metrix(R, metrix, scale, name=None, prt=None, latex=None, callback=None
     
     """        
     metrix_info = [metrix, scale, 
-                  name or metrix, prt or metrix, latex or metrix]
+                   unicode(name)  if name else None, 
+                   unicode(prt)   if prt else None, 
+                   unicode(latex) if latex else None,
+                   unicode(html)  if html else None
+                ]   
     R.metrix_lookup[metrix] = metrix_info
     for unit, info in R.unit_lookup.items():
         if info[U_ISMETRIX]:
@@ -342,7 +852,7 @@ def remove_metrix(R, metrix, callback=None):
             removed.append(remove_unit(R, unit, callback=callback))
     return removed        
 
-def make_kind(R, kind, definition="", baseunit="", name=None, unitless=False):
+def make_kind(R, kind, definition="", unitbase="", name=None):
     """ Add a new kind of quantity
 
     Parameters
@@ -356,7 +866,7 @@ def make_kind(R, kind, definition="", baseunit="", name=None, unitless=False):
             >>> make_kind("velocity", "length/time")         
         If defintion is "" the new kind is completely independant.
     
-    baseunit: string, optional
+    unitbase: string, optional
         The base unit of the kind (mostly the SI unit). e.g. is 'm' for 'length' kind
 
     name : string, optional
@@ -370,27 +880,30 @@ def make_kind(R, kind, definition="", baseunit="", name=None, unitless=False):
     name = name or kind
 
     if definition:
-        H = R.interp_kindhash(definition)
+        H = R.kindparser.eval(definition).get_hash()
     else:
-        H = hash(kind)
+        H = hrounder(float(hash(kind)))
 
     if H in R.hash2kind_lookup:
-        print("Warning '%s' kind shares the same hashing than '%s'."%(kind,R.hash2kind_lookup[H]))
-            
+        alt_Hs = [H]+R.hash2kind_lookup[H][K_ALTH]
+        H = hrounder(float(hash(kind)))
+    else:
+        alt_Hs = []        
+        #print("Warning '%s' kind shares the same hashing than '%s'."%(kind,R.hash2kind_lookup[H][K_PYTHON]))
+                
+    newkind = [name, kind, definition, unitbase, H, alt_Hs]        
+    R.kind_lookup[kind] = newkind
+    R.hash2kind_lookup[H] = newkind
+    R.scale2unit_lookup[H] = {}
+    R.scale2systemunit_lookup[H] = {}
 
-    R.hash2kind_lookup[H] = kind        
-    R.kind_lookup[kind] = [name, kind, definition, baseunit, unitless, H]
-    R.scale2unit_lookup[kind] = {}
-
-    
         
-
-
 def remove_kind(R, kind, callback=None):
     if R.__isglobal__:
         raise RegisterError("Cannot remove kind on global register")    
 
-    H = R.kind_lookup[kind][K_H]    
+    K= R.kind_lookup[kind]
+    H = K[K_H]    
     del R.hash2kind_lookup[H]
     del H
         
@@ -400,18 +913,19 @@ def remove_kind(R, kind, callback=None):
 
     removed = []
     for unit, info in R.unit_lookup.items():
-        if info[U_KIND]==kind:
+        if info[U_BASE][UB_K] is K:
             removed.append(remove_unit(R, unit, callback=callback))
 
-    del R.scale2unit_lookup[kind]
-
+    del R.scale2unit_lookup[H]
+    del K    
     return removed        
                     
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     #  Units
 
-def make_unit(R, unit, scale_or_definition, kind, dimension=1, metrix=False, name=None, prt=None, callback=None):
+def make_unit(R, unit, scale_or_definition, kind, dimension=1, metrix=False, name=None, 
+                        prt=None, latex=None, html=None, system="", callback=None):
     """ Make a new unit
 
     Parameter
@@ -442,6 +956,11 @@ def make_unit(R, unit, scale_or_definition, kind, dimension=1, metrix=False, nam
     prt : string, optional
         short representation for nice printout purpose
 
+    latex : string, optional
+       latex representation of unit
+    
+    html : string, optional
+       html representation of unit
 
     """    
                 
@@ -453,32 +972,39 @@ def make_unit(R, unit, scale_or_definition, kind, dimension=1, metrix=False, nam
 
     definition = scale_or_definition
     if isinstance(scale_or_definition, basestring):
-        scale = R.interp_scale(scale_or_definition)        
+        scale = R.unitparser.eval(scale_or_definition).get_scale()        
     else:
         scale = float(scale_or_definition)
         
-    H = R.kind_lookup[kind][K_H]    
+    K = R.kind_lookup[kind]
+
+    ubaseinfo = [
+        unit, #UB_UNIT python name
+        name, #UB_NAME nice name
+        unicode(prt)  if prt else None,  # UB_PRINT print name 
+        unicode(latex)if latex else None, 
+        unicode(html) if html else None, 
+        definition, 
+        system, # UB_SYSTEM  system of the unit 
+        K # UB_K kind definition of the unit     
+    ]
 
 
     #if dimension>1:        
     #    scale = scale**dimension
         
-    uinfo = [unit, # U_UNIT  python unitname 
-             name, # U_NAME  nice name 
-             prt,  # U_PRINT print name 
-             definition, # U_DEFINITION initial definition for reference
-             kind, # U_KIND unit kind 
-             "",  # U_METRIX   metrix suffix of the unit 
-             scale, # U_SCALE  scale of the unit 
-             int(dimension),  # U_DIMENSION  unit dimension e.g. 2 for area
-             bool(metrix),     # U_ISMETRIX
-             H # U_H
+    uinfo = [ubaseinfo,         
+             BASE_M, 
+             unit,
+             scale, 
+             dimension
             ]
-                
+    H = K[K_H]
+
     R.unit_lookup[unit] = uinfo
-    R.scale2unit_lookup[kind].setdefault(scale, unit)
-
-
+    R.scale2unit_lookup[H].setdefault(scale, uinfo)
+    if system and system != MixedSystem:
+        R.scale2systemunit_lookup[H].setdefault(system,{}).setdefault(scale, uinfo)
     
     if callback:      
         callback(unit)
@@ -486,57 +1012,63 @@ def make_unit(R, unit, scale_or_definition, kind, dimension=1, metrix=False, nam
     if metrix:
         for metrix_info in R.metrix_lookup.itervalues():
             make_metrix_unit(R, uinfo, metrix_info, callback)
-
+                
 def remove_unit(R, unit, callback=None):
     if R.__isglobal__:
         raise RegisterError("cannot remove unit on global register")
-    kind = R.unit_lookup[unit][U_KIND]
-    scale = R.unit_lookup[unit][U_SCALE]
+    i =  R.unit_lookup[unit]   
+    H =  i[U_BASE][UB_K][K_H]
+    scale = i[U_SCALE]
 
     del R.unit_lookup[unit]
-    del R.scale2unit_lookup[kind][scale]
-
+    del R.scale2unit_lookup[H][scale]
 
     if callback:      
         callback(unit)
     return unit
         
 
+def _make_m_mame(name1, alt1, name2, alt2, sep=""):
+    if not name1 and not name2:
+        return None
+    elif name1 is None:
+        return alt1+sep+name2
+    elif name2 is None:
+        return name1+sep+alt2
+    return name1+sep+name2
+        
 def make_metrix_unit(R, unit, metrix, callback=None):
     metrix_info = R.metrix_lookup[metrix] if isinstance(metrix, basestring) else metrix
     unit_info   = R.unit_lookup[unit] if isinstance(unit, basestring) else unit
 
     metrix = metrix_info[M_PYTHON]
-    unit = unit_info[U_UNIT]
-    metrix_unit = metrix+unit
+    unitbase = unit_info[U_BASE]
+        
     metrix_scale = metrix_info[M_SCALE]
-    name = unit_info[U_NAME]
-    prt = unit_info[U_PRINT]
     dimension = unit_info[U_DIMENSION]
-    kind = unit_info[U_KIND]
-
 
     if dimension>1:
         metrix_scale = metrix_scale**dimension
 
     metrix_scale *= unit_info[U_SCALE] # multiply by the unit scale
+    
+    newunitname = metrix_info[M_PYTHON]+unit_info[U_BASE][UB_UNIT]
+    newinfo = [
+               unit_info[U_BASE], 
+               metrix_info, 
+               newunitname,
+               metrix_scale, 
+               dimension
+            ]                    
+    H =  unit_info[U_BASE][UB_K][K_H]        
 
-    newinfo = [metrix_unit, 
-               metrix_info[M_NAME]+" "+(name if name else unit), 
-               metrix_info[M_PRINT]+(prt if prt else unit), 
-               unit_info[U_DEFINITION], 
-               kind,
-               metrix, 
-               metrix_scale,
-               dimension,
-               False, 
-               R.kind_lookup[kind][K_H]
-            ]
-            
-    R.unit_lookup[metrix_unit] = newinfo
-    R.scale2unit_lookup[kind].setdefault(metrix_scale, metrix_unit)
+    R.unit_lookup[newunitname] = newinfo
+    R.scale2unit_lookup[H].setdefault(metrix_scale, newinfo)
+    system  = unit_info[U_BASE][UB_SYSTEM]
 
-
+    if system and system != MixedSystem:
+        R.scale2systemunit_lookup[H].setdefault(system,{}).setdefault(metrix_scale, newinfo)
+        
     if callback:
         callback(metrix_unit)        
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -544,7 +1076,7 @@ def make_metrix_unit(R, unit, metrix, callback=None):
 
 
 
-def make_convertor(R, kinds, targets, func):
+def make_convertor(R, kinds, targets, inputunit, outputunit, func):
     """ make a kind to kind convertor 
 
     This is rarely used, most of the unit of the same kind are just proportional from 
@@ -558,7 +1090,10 @@ def make_convertor(R, kinds, targets, func):
         list of kinds. If string must be separated by ","
     targets: string or list
         list of kinds targeted by the convertor
-
+    inputunit: string 
+        the unit that should be passed into func
+    outputunit: string 
+        the unit returned by func   
     func : callable
         the conversion function from kind in kinds to kind in targets             
 
@@ -589,116 +1124,205 @@ def make_convertor(R, kinds, targets, func):
 
     for kind in kinds:
         for target in targets:
-            if kind==target:
-                raise ValueError("building convertor kinds are equal '%s'"%kind)
-            convertor_lookup[(kind, target)] = convertor_func   
+            H =  "*" if  kind=="*"  else hashofkind(R, kind)
+            Ht = "*" if target=="*" else hashofkind(R, target)
+            if H==Ht:
+                raise ValueError("building convertor, kinds are equal '%s'"%kind)
+            convertor_lookup[(H, Ht)] = [inputunit, outputunit, convertor_func]
+            #convertor_lookup[(H, Ht)] = convertor_func   
     return
-
-    if kinds == "*":
-        if targets == "*":
-            raise ValueError("building convertor kind and target cannot be both '*'")
-        kinds = kind_lookup.keys()
-
-    elif isinstance(kinds, basestring):
-        kinds =  [k.strip() for k in kinds.split(",")]
-    if targets == "*":
-        ## all the other kind are targeted
-        ## should be used only to dimless kinds  
-        targets = kind_lookup.keys()
-        for kind in kinds:
-            targets.remove(kind)
-    elif isinstance(targets, basestring):       
-        targets  = [t.strip() for t in targets.split(",")]
-    
-    if isinstance(func, basestring):
-        convertor_func = eval(func)
-    else:
-        convertor_func = func
-
-    for kind in kinds:
-        for target in targets:
-            convertor_lookup[(kind, target)] = convertor_func   
-
     ######################################################################################
     #
     #  Define the API function.
     #
     ######################################################################################
 
-def convert(R, value, unit, newunit, inside=lambda x,u:x):
-    if hasattr(value, "__tovalue__"):
-        value = value.__tovalue__(value)        
-             
-    kind = kindofunit(R, unit)
-    newkind = kindofunit(R, newunit)
 
-    scale    = scaleofunit(R, unit)
-    newscale = scaleofunit(R, newunit)
+def _applyconvertors(R, value, unit1, unit2, H, altHs, rev=False):
+    unit = unit1
+    for H2 in altHs:
+        try:            
+            if rev:
+                uin, uout, convertor = R.convertor_lookup[(H,H2)]                
+            else:    
+                uin, uout, convertor = R.convertor_lookup[(H2,H)]
+        except KeyError:
+            unit = unit2
+            value *= R.unit_lookup[unit1][U_SCALE]/R.unit_lookup[unit2][U_SCALE]
+        else:                
+            if uin!=unit:
+                value *= R.unit_lookup[unit1][U_SCALE]/R.unit_lookup[uin][U_SCALE]
 
-    if kind != newkind:
-        convertor = getconvertor(R, kind, newkind)
-        if convertor is None:
-            raise ValueError("cannot convert a '%s' to a '%s'"%(kind, newkind))
-        newvalue, convertedunit = convertor(value, unit)
-        if convertedunit!=newunit:
-            newvalue = convert(R,newvalue, convertedunit, newunit)
-    else:
-        newvalue = value / newscale * scale    
-    return inside(newvalue, newunit)
+            value = convertor(value)
+            unit = uout
+
+    if unit2!=unit:
+        value *= R.unit_lookup[uout][U_SCALE]/R.unit_lookup[unit2][U_SCALE]
+        unit1 = uout
+    return value
+
+
+
+def _convert(R, value, unit1, unit2):
         
+    us1 = R.unitparser.eval(unit1)
+    us2 = R.unitparser.eval(unit2)
+    h1, ht1, s1 = us1.get("hash", "althash", "scale")
+    h2, ht2, s2 = us2.get("hash", "althash", "scale")
+    
 
-def _kindofunit(R, unit):
-    """ return the kind string of a unit or None if unit does not exist"""        
-          
+    if (h1)==(h2):
+        return value * s1/s2
+    if (ht1)!=(ht2):
+        k1 = R.hash2kind_lookup[h1][K_PYTHON] if h1 in R.hash2kind_lookup else "unknown-kind"
+        k2 = R.hash2kind_lookup[h2][K_PYTHON] if h2 in R.hash2kind_lookup else "unknown-kind"        
+        raise UnitError("impossible conversion from a %r to a %r"%(k1,k2))        
+
+    s1,s2,convertors = group(R, us1.U, us2.U);
+
+    H1,Ht1,scale1 = s1.get("hash", "althash", "scale")
+    H2,Ht2,scale2 = s2.get("hash", "althash", "scale")
+
+    if Ht1!=Ht2:
+        k1 = R.hash2kind_lookup[h1][K_PYTHON] if h1 in R.hash2kind_lookup else "unknown-kind"
+        k2 = R.hash2kind_lookup[h2][K_PYTHON] if h2 in R.hash2kind_lookup else "unknown-kind"
+        raise UnitError("Impossible conversion from %r to %r"%(k1,k2))
+
+    value *= scale1/scale2
+    for d1,d2,c in convertors:
+        if d1[GU_D]!=d2[GU_D]:
+            raise UnitError("Dimension mismatch")
+        value = c(value, d1[GU_U][U_PYTHON], d2[GU_U][U_PYTHON] )**d1[GU_D]
+    return value
+
+
+def convert(R, value, unit1, unit2=None, system=None, inside=lambda x,u:x):
+    if unit2 is None:
+        if system is None:
+            unit2 = baseofunit(R, untit1)
+        else:
+            H = R.unitparser.eval(unit1).get_hash()
+            try:    
+                sys_lookup = R.scale2systemunit_lookup[H]
+            except KeyError:
+                raise KindError("No recorded system for this kind")    
+            else:
+                try:
+                    scale_lookup = sys_lookup[system]
+                except KeyError:
+                    raise KindError("No system found for this kind")
+                else:
+                    uscale = scaleofunit(R, unit1)
+                    keys = scale_lookup.keys()
+                    ##
+                    ## One could take the scale the closest to the value, but sometime it ends up
+                    ## to weird units like yoctoparsec ! 
+                    #diff, i = min((abs(value*uscale-s), idx) for (idx, s) in enumerate(keys))
+                    ##
+                    ## Or maybe the lower scale of the unit ?
+                    # diff, i = min((abs(uscale), idx) for (idx, s) in enumerate(keys))
+                    # unit2 = scale_lookup[keys[i]][U_PYTHON]
+                    ## better to take the base unit of the system                     
+                    for scale, U in scale_lookup.iteritems():
+                        if U[U_PYTHON] == U[U_BASE][UB_K][K_BASE]:
+                            unit2 = scale_lookup[scale][U_PYTHON]
+                            break
+                    else:
+                        diff, i = min((abs(uscale), idx) for (idx, s) in enumerate(keys))
+                        unit2 = scale_lookup[keys[i]][U_PYTHON]        
+
+    elif system is not None:
+        raise ValueError("convertion unit and system cannot be both given")
+    
+    return inside(_convert(R, value, unit1, unit2), unit2)
+
+
+def _bestscale(scales, scale):
+    dif = [abs(s-scale) for s in scales]
+    return scales[dif.index(min(dif))]
+
+def convertsystem(R, value, unit, system):
+    ## try the fast way 
+    H, Ht, usystem, uscale = R.unitparser.eval(unit).get("hash", "althash", "system", "scale")
+
     try:
-        H = R.interp_unithash(unit)
-    except NameError as e:
-        raise UnitError("unknown unit %s in '%s'"%(_extract_nameerror(e), unit))        
-    return R.hash2kind_lookup.get(H,None)
+        scale_lookup = R.scale2systemunit_lookup[H]
+    except KeyError:
+        pass
+    else:
+        try:
+            scale2unit = scale_lookup[system]
+        except KeyError:
+            raise NameError("system %r is unknown for that kind "%(system))    
+        
+        bestscale = _bestscale(scale2unit.keys(), uscale)
+        return value*uscale/bestscale, scale2unit[bestscale][U_PYTHON]
+    
+
+def kindofkind(R, kind):
+    H, Ht = R.kindparser.eval(kind).get("hash", "althash")
+    try:
+        i = R.hash2kind_lookup[H]
+    except KindError:
+        try:
+            i = R.hash2kind_lookup[Ht]
+        except KindError:
+            return kind                    
+    return i[K_PYTHON]
+
 
 def kindofunit(R, unit):
     """ return the kind string of a unit or None if unit does not exist"""
-    k = _kindofunit(R, unit)
-    if k is not None:
-        return k
 
+    # try the fast way     
+    H, Ht, name = R.unitparser.eval(unit).get("hash", "althash", "python")
     try:
-        H = R.interp_unitlesshash(unit)
-    except NameError as e:
-        raise UnitError("unknown unit %s in '%s'"%(_extract_nameerror(e), unit))
-        
-    try:
-        kind = R.hash2kind_lookup[H]
+        return R.hash2kind_lookup[H][K_PYTHON]
     except KeyError:
-        return anykindofunit(R,unit)
-    return kind 
+        try:
+            return R.hash2kind_lookup[Ht][K_PYTHON]        
+        except KeyError:
+            return None
 
-def anykindofunit(R, unit):    
-    try:
-        kind = R.interp_unitkindname(unit)
-    except NameError as e:
-        raise UnitError("unknown unit %s : %s"%(unit,_extract_nameerror(e)))
-    return kind
+def systemofunit(R, unit):
+    return R.unitparser.eval(unit).get_system()
 
 def scaleofunit(R, unit):
     """ return the scale factor of a unit """
-    try:
-        scale = R.interp_scale(unit) if unit else 1.0
-    except NameError as e:
-        raise UnitError("unknown unit %s : %s"%(unit,_extract_nameerror(e)))        
-    return scale
+    return R.unitparser.eval(unit).get_scale() if unit else 1.0    
 
-def kindofkind(R, kind):
+def scaleofmetrix(R, metrix):
+    """ return the scale factor of a metrix """
     try:
-        H = R.interp_kindhash(kind)
-    except NameError as e:
-        raise UnitError("unknown kind : %s"%_extract_nameerror(e))
-    try:
-        newkind = R.hash2kind_lookup[H]
+        i = R.metrix_lookup[metrix]
     except KeyError:
-        return kind
-    else:
-        return newkind                
+        return None
+    return i[M_SCALE]        
+
+def latexofmetrix(R, metrix):
+    """ return the scale factor of a metrix """
+    try:
+        i = R.metrix_lookup[metrix]
+    except KeyError:
+        return None
+    return i[M_LATEX]
+
+def htmlofmetrix(R, metrix):
+    """ return the scale factor of a metrix """
+    try:
+        i = R.metrix_lookup[metrix]
+    except KeyError:
+        return None
+    return i[M_HTML]
+
+def nameofmetrix(R, metrix):
+    """ return the scale factor of a metrix """
+    try:
+        i = R.metrix_lookup[metrix]
+    except KeyError:
+        return None
+    return i[M_NAME]
+
 
 def unitofunit(R, unit,kind=None):
     """ rewrite a unit operation in a intelligible unit string if possible 
@@ -722,6 +1346,9 @@ def unitofunit(R, unit,kind=None):
     >>> unitofunit( "3600*s")
     ("h", "time")
     """
+    if not unit:
+        return NoneUnit, NoneKind
+
     kind = kindofunit(R, unit) if kind is None else kind
     if any(o in unit for o in '*/+-'):
         scale = scaleofunit(R, unit)
@@ -751,19 +1378,19 @@ def unitofscale(R, scale, kind):
     "km"
     >>> unitofscale( 3600*24, "time")
     "d"
-
     """
-    return R.scale2unit_lookup.get(kind,{}).get(scale, None)    
+    H = R.kindparser.eval(kind).get_hash()
+    try:
+        i =  R.scale2unit_lookup[H][float(scale)]
+    except KeyError:
+        return None
+    return i[U_PYTHON]
 
-def hashofkind(R, kind):
-    return R.kind_lookup[kind][K_H]
+def hashofkind(R, kind):    
+    return R.kindparser.eval(kind).get_hash()
 
 def hashofunit(R, unit):
-    try:
-        H = R.interp_unithash(unit)
-    except NameError as e:
-        raise UnitError("unknown kind : %s"%_extract_nameerror(e))    
-    return H
+    return R.unitparser.eval(unit).get_hash()
 
 def _getkindinfo(R, kind):
     return R.kind_lookup.get(kind,None)
@@ -805,7 +1432,7 @@ def kindof(value):
 def valueof(value):
     """ return value of a quantity or value itself
 
-    return getattr(value, "_value", value) 
+    return getattr(value, "value", value) 
     
     Parameter
     ---------
@@ -815,7 +1442,7 @@ def valueof(value):
     -------
     value : numerical
     """
-    return getattr(value, "_value", value)
+    return getattr(value, "value", value)
 
 def scaleof(R, value):
     """ return the 'scale' of a quantity or value itself
@@ -845,15 +1472,30 @@ def isunitless(value):
     """
     kind = kindof(value)
     R = getattr(value, "R", None)
-    if R:    
-        return (kind is None and unitof(value)=='') or\
-               (hashofkind(R,kind)==1) or\
-               (R.kind_lookup[kind][K_ULESS])
-    else:
-        return (kind is None and unitof(value)=='')
+    if R:
+        H,Ht = R.kindparser.eval(kind).get("hash", "althash")
+        return Ht==Hunitless
+
+    return (kind is None and unitof(value)=='')
+
                
-
-
+def nameofkind(R, kind):
+    """ return the  string name of a kind or None
+    
+    Parameters
+    ----------
+    kind : string
+    
+    Outputs
+    -------
+    name : string or None
+    
+    Examples
+    --------
+    >>> kindofunit( "km/h" )     
+    u'velocity'
+    """
+    return R.kindparser.eval(kind).get_name()
 
 
 def unitsofkind(R, kind):
@@ -870,7 +1512,14 @@ def unitsofkind(R, kind):
         list of string units of that `kind`
                     
     """
-    return [k for k,i in R.unit_lookup.iteritems() if i[U_KIND]==kind]
+    try:
+        K = R.kind_lookup[kind]
+    except KeyError:
+        return []                
+    return [k for k,i in R.unit_lookup.iteritems() if i[U_BASE][UB_K] is K]
+
+def _printisize(s):
+    return s
 
 def printofunit(R, unit):
     """ return the 'print' string version of a unit
@@ -888,9 +1537,10 @@ def printofunit(R, unit):
     --------
     >>> printofunit("mm")
     u'millimeter' 
-    """
-    info = _getunitinfo(R, unit)
-    return unicode(info[U_PRINT]) if info else unit
+    """    
+    return R.unitparser.eval(unit).get_print()
+
+
 
 def definitionofunit(R, unit):
     """ return the  string definition of a unit or None
@@ -929,8 +1579,47 @@ def nameofunit(R, unit):
     >>> nameofunit( "_c" )     
     u'velocity of light'
     """
-    info = _getunitinfo(R, unit)
-    return unicode(info[U_NAME]) if info else None
+    if not unit:
+        return NoneUnit
+
+    return R.unitparser.eval(unit).get_name()
+
+def _latexize(u):
+    return u
+def latexofunit(R, unit):
+    """ return the  string latex representation of a unit or None
+    
+    Parameters
+    ----------
+    unit : string
+    
+    Outputs
+    -------
+    latex : string or None
+        
+    """
+    if not unit:
+        return NoneUnit
+    return R.unitparser.eval(unit).get_latex()        
+
+def _htmlize(u):
+    return u
+
+def htmlofunit(R, unit):
+    """ return the  string html representation of a unit or None
+    
+    Parameters
+    ----------
+    unit : string
+    
+    Outputs
+    -------
+    latex : string or None
+        
+    """
+    if not unit:
+        return NoneUnit
+    return R.unitparser.eval(unit).get_html()     
 
 def metrixofunit(R, unit):
     """ return the  string metrix of a unit or None
@@ -948,8 +1637,11 @@ def metrixofunit(R, unit):
     >>> metrixofunit( "km" )     
     'k'
     """
+    if not unit:
+        return NoneUnit
+
     info = _getunitinfo(R, unit)
-    return unicode(info[U_METRIX]) if info else None
+    return unicode(info[U_METRIX][U_NAME]) if info else None
 
 def baseofunit(R, unit):
     """ return the  string base of a unit or None
@@ -967,6 +1659,8 @@ def baseofunit(R, unit):
     >>> baseofunit( "km" )     
     'm'
     """
+    if not unit:
+        return NoneUnit
     return baseofkind(R, kindofunit(R, unit))
     #info = _getunitinfo(unit)
     #return unicode(info[U_BASE]) if info else None
@@ -988,7 +1682,7 @@ def basescaleofunit(R, unit):
     1000.0
     >>> getscale( "m" ) 
     1.0
-    """    
+    """
     return scaleofunit(R, unit)/scaleofunit(R, baseofunit(R, unit))
             
 def dimensionsofunit(R, unit):
@@ -1010,11 +1704,7 @@ def dimensionsofunit(R, unit):
     >>> dimensionsofunit("km/s**2 * g")
     {'length': 1, 'mass': 1, 'time': -2}
     """
-    try:
-        dims = R.interp_dimension(unit)
-    except NameError as e:
-        raise UnitError("unknown kind : %s"%_extract_nameerror(e))    
-    return dims                  
+    return R.unitparser.eval(unit).get_dimensions()
 
 
 def baseofkind(R, kind):
@@ -1037,20 +1727,9 @@ def baseofkind(R, kind):
     >>> baseofkind("velocity")
     'm/s'
     """
-    kind = kindofkind(R, kind)
-    try:
-        kindinfo = R.kind_lookup[kind]
-    except KeyError:
-        try:
-            unit = R.interp_kindbase(kind)
-        except NameError as e:
-            #return None
-            raise UnitError("Kind unknown : %s"%_extract_nameerror(e))            
-        return unitofunit(R,unit)[0]
-
-    if kindinfo:
-        return kindinfo[K_BASE]  
-    return None
+    if not kind:
+        return NoneUnit
+    return R.kindparser.eval(kind).get_baseunit()
 
 def isunitof(R, unit, kind):
     """ return True if unit is of kind 
@@ -1072,7 +1751,7 @@ def isunitof(R, unit, kind):
     >>> isunitof( "Hz", "length")
     False 
     """
-    return kindofunit(R, unit) == kind
+    return R.unitparser.eval(unit).get_hash() == R.kindparser.eval(kind).get_hash()
 
 def getconvertor(R, kind, kind_targeted):
     """ return a convertor funtion between 2 kinds if exist or None
@@ -1087,17 +1766,20 @@ def getconvertor(R, kind, kind_targeted):
     e.g. :   quantity(300, "k").to("Cel") ->  26.85 [Cel]
 
     """
+
+    H = hashofkind(R, kind) if isinstance(kind, basestring) else kind
+    Ht = hashofkind(R, kind_targeted) if isinstance(kind_targeted, basestring) else kind_targeted
     try:
-        c = R.convertor_lookup[(kind, kind_targeted)]
+        c = R.convertor_lookup[(H,Ht)]
     except KeyError:
         try:
-            c = R.convertor_lookup[("*", kind_targeted)]
+            c = R.convertor_lookup[("*", Ht)]
         except KeyError:
             try:
-                c = R.convertor_lookup[(kind, "*")]
+                c = R.convertor_lookup[(H, "*")]
             except:
                 c = None
-    return c
+    return c[C_PYTHON]
 
 def linksofkind(R, kind):
     """ return a list of kinds for which `kind` is linked 
@@ -1118,8 +1800,9 @@ def linksofkind(R, kind):
     ['temperature_c', 'fraction']            
     """
     lst = []
-    for ckind, target in R.convertor_lookup.keys():
-        if kind == ckind:
+    H = hashofkind(R, kind) if isinstance(kind, basestring) else kind
+    for cH, target in R.convertor_lookup.keys():
+        if H == cH:
             lst.append(target)
     return lst
 
@@ -1198,4 +1881,123 @@ def metrixexist(R, metrix):
     test : boolean 
     """
     return metrix in R.metrix_lookup
+
+
+class unitcode(unicode):
+    def __new__(cl, R, u):
+        self = unicode.__new__(cl, unicode(u).strip())
+        self.R = R
+        return self
+                    
+    @property
+    def kind(self):
+        return kindcode(self.R, kindofunit(self.R, self))
+    
+    @property
+    def name(self):
+        return nameofunit(self.R, self)        
+
+    @property
+    def prt(self):
+        return printofunit(self.R, self)   
+
+    @property
+    def decompose(self):
+        return decomposeunit(self.R, self)
+         
+    @property
+    def pow(self):
+        return unitcode(self.R, unitpowofunit(self.R, self))
+            
+    @property
+    def latex(self):
+        return latexofunit(self.R, self)        
+
+    @property
+    def html(self):
+        return htmlofunit(self.R, self) 
+    
+    @property
+    def scale(self):
+        return scaleofunit(self.R, self) 
+
+    @property
+    def base(self):
+        return baseofunit(self.R, self)
+    
+    @property
+    def metrix(self):
+        return metrixcode(self.R, metrixofunit(self.R, self))
+    
+    @property
+    def dimensions(self):
+        return dimensionsofunit(self.R, self)
+
+class metrixcode(unicode):
+    def __new__(cl, R, u):
+        self = unicode.__new__(cl,unicode(u).strip())
+        self.R = R
+        return self
+    
+    @property
+    def scale(self):
+        return scaleofmetrix(self.R,self)
+    
+    @property
+    def name(self):
+        return nameofmetrix(self.R, self)        
+
+    @property
+    def latex(self):
+        return latexofmetrix(self.R, self)        
+
+    @property
+    def html(self):
+        return htmlofmetrix(self.R, self) 
+
+class kindcode(unicode):
+    def __new__(cl, R, u):
+        self = unicode.__new__(cl,unicode(u).strip())
+        self.R = R
+        return self
+
+    @property
+    def units(self):
+        return [unitcode(self.R, u) for u in self.R.iterunits(self)]
+
+    @property
+    def name(self):
+        return nameofkind(self.R, self)    
+
+    @property
+    def base(self):
+        return unitcode(self.R, baseofkind(self.R, self))
+
+class unitlist(list):
+    def __init__(self,R, iterable):
+        list.__init__(self, (unitcode(R,u) for u in iterable))
+        self.R = R
+
+    def __repr__(self):
+        return ", ".join(self)    
+
+    def append(self, obj):
+        list.append(self, unitcode(self.R, obj))    
+    
+    def extend(self, obj):
+        list.extend(self, (unitcode(self.R, u) for u in obj))    
+    
+    def __add__(self, obj):
+        return list.__add__(self, unitlist(self.R, obj))
+    
+    def __radd__(self, obj):
+        return list.__radd__(self, unitlist(self.R, obj))    
+
+    def __mul__(self, num):
+        return unitlist(self.R, list.__mul__(self, num))    
+    
+    def __rmul__(self, num):
+        return unitlist(self.R, list.__rmul__(self, num))
+
+
     

@@ -1,6 +1,8 @@
 import weakref
 from . import api
 
+
+
 def redoc(f):
     f.__doc__ = getattr(api, f.func_name).__doc__
     return f
@@ -93,18 +95,65 @@ class QuantityTypes(object):
                 delattr(toinstance, unit)
 
     @classmethod     
-    def __register_type__(me, subclass, cl, before=None, parser=None):
+    def __register_type__(me, subclass, cl, before=None, parser=None, replace=None):
+        if before is not None and replace is not None:
+            raise ValueError("before and replace cannot be both set")
         if before:
             for i, (s,c) in enumerate(me.registered_quantity):
                 if before is s:
-                    break
+                    break                            
+        elif replace:
+            for i, (s,c) in enumerate(me.registered_quantity):
+                if replace is s:
+                    break                     
         else:
             i = len(me.registered_quantity)
-        me.registered_quantity.insert(i, (subclass, cl))
+                
+        if replace: 
+            me.registered_quantity[i] = (subclass, cl)
+        else:                
+            me.registered_quantity.insert(i, (subclass, cl))
         
         if parser:
             me.registered_quantity_parser.append((parser,cl))    
+    
+    def register_system_units(self, *args):        
+        from .data_parser import  parse_metrix_table, parse_convertors_table, parse_kinds_table, parse_units_table
+        from .data_quantity import (unit_txt_tables , kind_txt_tables, metrix_txt_tables,  convertor_txt_tables)
+        args = list(args)
+
+        if args:
+            options = []
+            for o in ["metrix","kinds","units","convertors"]:
+                try:
+                    options.append(args.remove())
+                except:
+                    continue
+            if len(args):
+                raise ValueError("Unknown option %s"%args) 
+        else:
+            options = ["metrix","kinds","units","convertors"]                       
         
+        R = self.R
+
+        if "metrix" in options:
+            for tbl in metrix_txt_tables:
+                parse_metrix_table(R, tbl)    
+
+        if "kinds" in options:        
+            for tbl in kind_txt_tables:
+                parse_kinds_table(R, tbl)
+
+        if "convertors" in options:        
+            for tbl in convertor_txt_tables:
+                parse_convertors_table(R, tbl)                
+
+        if "units" in options:        
+            for tbl in unit_txt_tables:
+                parse_units_table(R, tbl)  
+
+        self.__update__()          
+
             
     def quantitytype(self, tpe):
         for subcl, cl in self.registered_quantity:
@@ -124,19 +173,32 @@ class QuantityTypes(object):
             else:
                 return cl, v        
 
-        return None, value 
-        
+        return None, value
+    
+    def parsevalue(self, value):
+        for subcl, cl in self.registered_quantity:
+            if isinstance(value, subcl):
+                return value         
+        for parser, cl in self.registered_quantity_parser:
+            try:
+                v = parser(value)
+            except:
+                continue
+            else:
+                return v
+        raise ValueError("type '%s' is an invalid type for quantity")        
+
     @redoc    
-    def make_metrix(self, metrix, scale, name=None, prt=None, latex=None):         
-        return  api.make_metrix(self.R, metrix, scale, name=name, prt=prt, latex=latex, callback=self.__updateunit__)
+    def make_metrix(self, metrix, scale, name=None, prt=None, latex=None, html=None):         
+        return  api.make_metrix(self.R, metrix, scale, name=name, prt=prt, latex=latex, html=html, callback=self.__updateunit__)
            
     @redoc    
     def remove_metrix(self, metrix):
         return  api.remove_metrix(self.R, metrix, callback=self.__updateunit__)
 
     @redoc    
-    def make_kind(self, kind, definition="", baseunit="", name=None, unitless=False):
-        out =  api.make_kind(self.R, kind, definition=definition, baseunit=baseunit, name=name, unitless=unitless)
+    def make_kind(self, kind, definition="", unitbase="", name=None, unitless=False):
+        out =  api.make_kind(self.R, kind, definition=definition, unitbase=unitbase, name=name, unitless=unitless)
         self.__update__()
         return out
 
@@ -145,42 +207,35 @@ class QuantityTypes(object):
         return  api.remove_kind(self.R, kind, callback=self.__updateunit__)
     
     @redoc
-    def make_unit(self, unit, scale_or_definition, kind=None, dimension=1, metrix=False, name=None, prt=None):
+    def make_unit(self, unit, scale_or_definition, kind=None, dimension=1, metrix=False, name=None, prt=None, system=""):
         if isinstance(scale_or_definition, basestring):
             scale = self.scaleofunit(scale_or_definition)
-
-            if kind is None:
-                kind = self.kindofunit(scale_or_definition)
-            if not self.kindexist(kind):
-                raise ValueError("kind '%s' is not registered"%kind)
-                            
-            
+            ukind = self.kindofunit(scale_or_definition)            
         else:
             if hasattr(scale_or_definition, "unit"):
                 try:                
                     scale = float(scale_or_definition)
                 except TypeError:
-                    raise ValueError("unit quantity must be a scalar convertible to float")    
-                    
-                scale *= self.scaleofunit(scale_or_definition.unit)
-                kind = scale_or_definition.kind
+                    raise ValueError("unit quantity must be a scalar convertible to float")
 
+                scale *= self.scaleofunit(scale_or_definition.unit)        
+                ukind = self.kindofunit(scale_or_definition.unit)
+            else:
+                scale = scale_or_definition
                 if kind is None:
-                    raise ValueError("quantity has no kind")                        
-                if not self.kindexist(kind):
-                    raise ValueError("kind '%s' is not registered"%kind)
-                       
+                    raise ValueError("kind name is expected when unit not defined by a string or quantity")
 
-        return api.make_unit(self.R, unit, scale, kind,  dimension=dimension, metrix=metrix, name=name, prt=prt, callback=self.__updateunit__)                            
+        if kind is None:                            
+            if not self.kindexist(ukind):
+                raise ValueError("kind '%s' is not registered, provide a kind name to create one on the fly"%ukind)
+            kind = ukind                
+        else:            
+            if self.kindexist(ukind) and ukind!=kind:
+                raise ValueError("the kind already exists under the name '%s' cannot change to '%s'"%(ukind,kind))
+            self.make_kind(kind, ukind)    
 
-    
-    def add_unit(self, name, unit):
-        if isinstance(unit, basestring):
-            scale, unit, kind = 1.0, unit, self.kindofunit(unit)
-        else:
-            scale, unit, kind = unit._value, unit.unit, unit.kind
-        return self.make_unit(kind, dimension=1, metrix=False, name=None, prt=None)    
-
+        return api.make_unit(self.R, unit, scale, kind,  dimension=dimension, metrix=metrix, name=name, prt=prt, system=system, callback=self.__updateunit__)                            
+        
     @redoc    
     def remove_unit(self, unit):
         return  api.remove_unit(self.R, unit, callback=self.__updateunit__)

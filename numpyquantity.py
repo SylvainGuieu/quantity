@@ -1,11 +1,15 @@
 from . import base
-from .base import (_quantity_shared,                     
+from .base import (_QuantityShared_,                     
                     _prepare_quantity_class, 
-                    parseunit, 
-                    QuantityTypes
+                    parseunit, parsetrueunit,
+                    QuantityTypes, parentize,
+                    convert, unitcode, unitlist, 
+                    _linear_op_prepare
                   )
-from .base import Unit as BaseUnit
+from . import api
+from .base import BaseUnit
 import numpy as np
+import sys
 
 __all__ = ["Qarray", "Qfloat128", "Qfloat64", "Qfloat32", "Qfloat16", 
            "Qint64", "Qint32", "Qint16", "Qint8", 
@@ -18,20 +22,30 @@ def isarray(v):
     """ to check if an array of scalar """
     return hasattr(v, "__iter__")
 
+def parserecord(a):    
+    a.dtype.type == np.record
+    return a
+
+
 class Unit(BaseUnit, np.ndarray):
     def __new__(cl, unit):
-        new = np.asarray(1.0).view(cl)
-        new._unit = unit
-        new.__init_unit__()
+        new = np.asarray(1.0).view(cl)        
+        new.__init_unit__(unit)
         return new
-    @property
-    def unit(self):
-        return self._unit
 
     def __array_wrap__(self, o):
-        return self.__class__(self.unit)    
+        if isinstance(o, np.ndarray) and not o.shape:
+            return self.__qbuilder__(o.dtype.type(o), self.unit)
+        return self.__qbuilder__(o, self.unit)
 
-class Qarray(_quantity_shared, np.ndarray):
+####
+# So far a None type is registered to base.Unit 
+# we need to remove it a nd replace it by the numpy version
+QuantityTypes.__register_type__(type(None), Unit, replace=type(None))
+
+
+class Qarray(_QuantityShared_, np.ndarray):
+    _unit = u''
     def __new__(subtype, data_array, unit=""):
         self = np.asanyarray(data_array)
         oview = type(self)        
@@ -45,67 +59,229 @@ class Qarray(_quantity_shared, np.ndarray):
             if len(unit) != len(self.dtype):
                 raise ValueError("Number of array field is %d number of units is %s"%( len(self.dtype),len(unit)))
             unit = [parseunit(self.R, u) for u in unit]
-
-                
-        self._unit = unit
-        self._oview = oview
-
-        if self.dtype.type is not Qvoid and self.dtype.fields:
-            self.dtype = np.dtype((Qvoid, self.dtype))
-            self.dtype.type.unit = self.unit      
-
-        self.__init_unit__()    
-        return self
-
-    def __array_finalize__(self, obj):
-        pass
+                                
         #if self.dtype.type is not Qvoid and self.dtype.fields:
         #    self.dtype = np.dtype((Qvoid, self.dtype))
         #    self.dtype.type.unit = self.unit      
 
-    def __getitem__(self, item):
-        sub = np.ndarray.__getitem__(self, item)
-        if self._sameunit:
-            unit = self.unit
-        else:
-            if isinstance(item, basestring):
-                try:
-                    i = self.dtype.names.index(item)
-                except ValueError:
-                    raise ValueError("no field of name %s"%item)
-                unit = self.unit[i]
+        self.__init_unit__(unit)    
+        return self
+
+    def __array_finalize__(self, obj):
+        if issubclass(self.dtype.type, np.void):            
+            if self.dtype.type is not Qvoid and self.dtype.fields:
+                self.dtype = np.dtype((Qvoid, self.dtype))       
+
+    def __init_unit__(self, unit):
+        if isinstance(unit, basestring):
+            if "," in unit:
+                self._unit = unitlist(unit.split(","))
+            else:                
+                self._unit = unitcode(self.R, unit)
+
+        elif hasattr(unit, "unit"):
+            self._unit = unitcode(self.R, unit.unit)
+        else:            
+            if not hasattr(unit, "__iter__"):
+                raise ValueError("Expecting a string, an object with 'unit' attribute or an iterable ,  got %r"%unit)                    
+            self._unit = unitlist(self.R, (u if isinstance(u, basestring) else u.unit for u in unit))
+    
+    def inplace_convert(self, unit, __scale__= None):
+        if not self.shape:
+            raise ValueError("convert works only on mutable object")        
+        if self.dtype.fields:
+            if not isinstance(unit, basestring):
+                if hasattr(unit, "unit"):
+                    unit = unit.unit
+                    if hasattr(unit, "__iter__"):
+                        # one more time 
+                        unit = list(unit)
+                    elif hasattr(self.unit, "__iter__"):
+                        unit = [unit]*len(self.dtype.fields)
+
+                elif hasattr(unit, "__iter__"):
+                    unit = list(unit)
+                else:
+                    raise ValueError("unit expecting to be a string or object with 'unit' attribute, got %s"%unit)        
             else:
-                unit = self.unit             
-        try:
-            len(sub)
-        except TypeError:
-            return self.QT().get_quantity_class(type(sub))[0](sub, unit)
-            #return self.__qbuilder__(sub, unit)            
+                # this is a string
+                if "," in unit:
+                    unit = unitlist(unit)
+                elif hasattr(self.unit, "__iter__"):    
+                    unit = [unit]*len(self.dtype.fields)        
+            sunit = self.unit
+            if isinstance(sunit, basestring):
+                sunit = [sunit]*len(self.dtype.fields)         
+
+
+            for u,nu,field in zip(sunit, unit,self.dtype.fields):
+                scale = api.convert(self.R, 1.0, u, nu)
+                if __scale__ is not None:
+                    scale = scale * __scale__
+                self[field] *= (scale)                
+            self.__init_unit__(unit)  
+
+            return None
+        ###########################################
+
+
+        if not isinstance(unit, basestring):
+            if not hasattr(unit, "unit"):
+                raise ValueError("unit expecting to be a string or object with 'unit' attribute, got %s"%unit)
+            unit = unit.unit
+        
+        scale = api.convert(self.R, 1.0, self.unit, unit)
+        if __scale__ is not None:
+            scale = scale * __scale__
+        np.ndarray.__imul__( self, scale)
+        self.__init_unit__(unit)
+        
+
+    def __getitem__(self, item):
+        obj = np.ndarray.__getitem__(self, item)
+
+        # if isinstance(obj, np.ndarray):
+        #     if obj.dtype.fields:
+        #         obj = obj.view(type(self))
+        #         if issubclass(obj.dtype.type, np.record):
+        #             obj = obj.view(dtype=(self.dtype.type, obj.dtype))
+
+        #         elif issubclass(obj.dtype.type, np.void):
+        #             obj = obj.view(dtype=(self.dtype.type, obj.dtype))
+        #     else:
+        #         obj = obj.view(type=Qarray)
+                
+
+        if isinstance(item, basestring):
+            unit = self.__unitoffield__(item)
         else:
-            return self.__qbuilder__(np.asarray(sub), unit)
+            unit = self.unit         
+        return self.__qbuilder__(obj, unit)    
+                     
+                    
+        # try:
+        #     len(sub)
+        # except TypeError:
+        #     return self.__qbuilder__(sub, unit)
+        #     #return self.QT().get_quantity_class(type(sub))[0](sub, unit)
+        #     #return self.__qbuilder__(sub, unit)            
+        # else:            
+        #     return self.__qbuilder__(np.asarray(sub), unit)
                 
     def __getslice__(self, a,b): 
         sub = np.ndarray.__getslice__(self,a,b)       
         return Qarray(np.asarray(sub), self.unit)
     
-    def __tovalue__(self, v):
-        return np.asarray(v, dtype=self.dtype)
+    def __unitoffield__(self, item):
+        if self._sameunit:
+            return self.unit
+        try:
+            i = self.dtype.names.index(item)
+        except ValueError:
+            raise ValueError("no field of name %s"%item)
+        return self.unit[i]           
 
+    def __tovalue__(self, v):
+        v = np.asarray(v, dtype=self.dtype)
+        if issubclass(v.dtype.type, Qrecord):
+            object.__setattr__(v, "dtype",np.dtype((np.record, v.dtype))) 
+        if issubclass(v.dtype.type, Qvoid):
+            object.__setattr__(v, "dtype",np.dtype((np.void, v.dtype))) 
+        return v
     @property        
     def __qwrapper__(self):
         return lambda a,u: Qarray(np.asanyarray(a, self.dtype), u) 
 
+    @classmethod
+    def __qconvertor__(cl, R, value, unit, newunit, newcl):
+        if isinstance(value, np.ndarray):
+
+            if value.dtype.fields and hasattr(unit,"__iter__"):
+                if not hasattr(newunit, "__iter__"):
+                    newunit = [newunit] * len(value.dtype.fields)
+
+                out = np.ones_like(value)
+                for i,(field,nu) in enumerate(zip(value.dtype.names,newunit)):
+                    out[field] = convert(R, value[field], unit[i], nu, newcl)
+                return out    
+
+        return convert(R, value, unit, newunit, newcl)
+            
     def __array_wrap__(self, o):
-        return self.__class__(o, self.unit)
+        if isinstance(o, np.ndarray) and not o.shape:
+            return self.__qbuilder__(o.dtype.type(o), self.unit)
+        return self.__qbuilder__(o, self.unit)
+
+    def __imul__(self, scl):
+        #self = np.ndarray.__imul__(self, getattr(scl,"value", scl))
+        sunit = self.unit
+        self = np.ndarray.__imul__(self, scl)
+        if hasattr(scl, "unit"):
+            if sunit:
+                self.__init_unit__(parsetrueunit(self.R, "%s*%s"%(sunit,scl.unit)))
+            else:
+                self.__init_unit__(parsetrueunit(self.R, (scl.unit)))
+        elif sunit:
+            self.__init_unit__(sunit)
+
+        return self    
+    
+    def __idiv__(self, scl):
+        #self = np.ndarray.__imul__(self, getattr(scl,"value", scl))
+        sunit = self.unit        
+        self = np.ndarray.__idiv__(self, scl)
+        if hasattr(scl, "unit"):
+            if sunit:
+                self.__init_unit__(parsetrueunit(self.R, "%s/%s"%(parentize(sunit),parentize(scl.unit))))
+            else:
+                self.__init_unit__(parsetrueunit(self.R, (scl.unit)))
+        elif sunit:
+            self.__init_unit__(sunit)
+                
+        return self    
+    
+    def __ifloordiv__(self, scl):
+        #self = np.ndarray.__imul__(self, getattr(scl,"value", scl))
+        self = np.ndarray.__ifloordiv__(self, scl)
+        if hasattr(scl, "unit"):
+            if sunit:
+                self.__init_unit__(parsetrueunit(self.R, "%s/%s"%(parentize(sunit),parentize(scl.unit))))
+            else:
+                self.__init_unit__(parsetrueunit(self.R, (scl.unit)))
+        elif sunit:
+            self.__init_unit__(sunit)                
+        return self
+
+
+    def __iadd__(self, offset):
+        lv, rv, unit = _linear_op_prepare(self, offset)        
+        self = np.ndarray.__iadd__(self, rv)
+        self.__init_unit__(unit)
+        return self
+    
+    def __isub__(self, offset):
+        lv, rv, unit = _linear_op_prepare(self, offset)
+        self = np.ndarray.__isub__(self, rv)
+        self.__init_unit__(unit)
+        return self
+
+        
+        
+
+
+
+
+
+    
+        
 
 class Qfloat128(np.float128):
     def __new__(cl, v, unit=""):
         if isarray(v):
             new = Qarray(np.asarray(v,dtype=np.float128), unit)
         else:    
-            new = np.float128.__new__(cl, v)
-            new._unit = parseunit(new.R, unit)
-        new.__init_unit__()        
+            new = np.float128.__new__(cl, v)        
+            new.__init_unit__(unit)        
         return new
 
     @staticmethod
@@ -120,9 +296,8 @@ class Qfloat64(np.float64):
         if isarray(v):
             new = Qarray(np.asarray(v,dtype=np.float64), unit)
         else: 
-            new = np.float64.__new__(cl, v)
-            new._unit = parseunit(new.R, unit)
-        new.__init_unit__()                
+            new = np.float64.__new__(cl, v)            
+            new.__init_unit__(unit)                
         return new
 
     @staticmethod
@@ -139,9 +314,8 @@ class Qfloat32(np.float32):
         if isarray(v):
             new = Qarray(np.asarray(v,dtype=np.float32), unit)
         else: 
-            new = np.float32.__new__(cl, v)
-            new._unit = parseunit(new.R, unit)
-        new.__init_unit__()                 
+            new = np.float32.__new__(cl, v)            
+            new.__init_unit__(init)                 
         return new
 
     @staticmethod
@@ -149,7 +323,6 @@ class Qfloat32(np.float32):
         return np.float32(v)
 
     def __repr__(self):
-        #print "AAAA"
         return "%r [%s]"%(self.__tovalue__(self), self.unit)    
                     
 QuantityTypes.__register_type__(np.float32, Qfloat32)
@@ -162,8 +335,7 @@ class Qfloat16(np.float16):
             new = Qarray(np.asarray(v,dtype=np.float16), unit)
         else: 
             new = np.float16.__new__(cl, v)
-            new._unit = parseunit(new.R, unit)
-        new.__init_unit__()            
+            new.__init_unit__(unit)            
         return new
 
     @staticmethod
@@ -180,8 +352,8 @@ class Qint64(np.int64):
             new = Qarray(np.asarray(v,dtype=np.int64), unit)
         else: 
             new = np.int64.__new__(cl, v)
-            new._unit = parseunit(new.R, unit)
-        new.__init_unit__()            
+            new.__init_unit__(unit)
+                 
         return new
 
     @staticmethod
@@ -196,8 +368,7 @@ class Qint32(np.int32):
             new = Qarray(np.asarray(v,dtype=np.int32), unit)
         else: 
             new = np.int32.__new__(cl, v)
-            new._unit = parseunit(new.R, unit)
-        new.__init_unit__()            
+            new.__init_unit__(unit)         
         return new
 
     @staticmethod
@@ -213,8 +384,8 @@ class Qint16(np.int16):
             new = Qarray(np.asarray(v,dtype=np.int16), unit)
         else: 
             new = np.int16.__new__(cl, v)
-            new._unit = parseunit(new.R, unit)
-        new.__init_unit__()            
+            new.__init_unit__(unit)
+
         return new
 
     @staticmethod
@@ -229,8 +400,7 @@ class Qint8(np.int8):
             new = Qarray(np.asarray(v,dtype=np.int8), unit)
         else: 
             new = np.int8.__new__(cl, v)
-            new._unit = parseunit(new.R, unit)
-        new.__init_unit__()            
+            new.__init_unit__(unit)            
         return new
 
     @staticmethod
@@ -246,9 +416,8 @@ class Quint64(np.uint64):
         if isarray(v):
             new = Qarray(np.asarray(v,dtype=np.uint64), unit)
         else: 
-            new = np.uint64.__new__(cl, v)
-            new._unit = parseunit(new.R, unit)
-        new.__init_unit__()            
+            new = np.uint64.__new__(cl, v)            
+            new.__init_unit__(unit)            
         return new
 
     @staticmethod
@@ -263,8 +432,7 @@ class Quint32(np.uint32):
             new = Qarray(np.asarray(v,dtype=np.uint32), unit)
         else:
             new = np.uint32.__new__(cl, v)
-            new._unit = parseunit(new.R, unit)
-        new.__init_unit__()            
+            new.__init_unit__(unit)            
         return new
 
     @staticmethod
@@ -280,9 +448,8 @@ class Quint16(np.uint16):
         if isarray(v):
             new = Qarray(np.asarray(v,dtype=np.uint16), unit)
         else:
-            new = np.uint16.__new__(cl, v)
-            new._unit = parseunit(new.R, unit)
-        new.__init_unit__()            
+            new = np.uint16.__new__(cl, v)            
+            new.__init_unit__(unit)            
         return new
 
     @staticmethod
@@ -297,9 +464,8 @@ class Quint8(np.uint8):
         if isarray(v):
             new = Qarray(np.asarray(v,dtype=np.uint8), unit)
         else:
-            new = np.uint8.__new__(cl, v)
-            new._unit = parseunit(new.R, unit)
-        new.__init_unit__()            
+            new = np.uint8.__new__(cl, v)            
+            new.__init_unit__(unit)            
         return new
 
     @staticmethod
@@ -315,8 +481,7 @@ class Qcomplex256(np.complex256):
             new = Qarray(np.asarray(v,dtype=np.complex256), unit)
         else:
             new = np.complex256.__new__(cl, v)
-            new._unit = parseunit(new.R, unit)
-        new.__init_unit__()            
+            new.__init_unit__(unit)
         return new
 
     @staticmethod
@@ -330,9 +495,8 @@ class Qcomplex128(np.complex128):
         if isarray(v):
             new = Qarray(np.asarray(v,dtype=np.complex128), unit)
         else:
-            new = np.complex128.__new__(cl, v)
-            new._unit = parseunit(new.R, unit)
-        new.__init_unit__()            
+            new = np.complex128.__new__(cl, v)        
+            new.__init_unit__(unit)            
         return new
 
     @staticmethod
@@ -348,8 +512,7 @@ class Qcomplex64(np.complex64):
             new = Qarray(np.asarray(v,dtype=np.complex64), unit)
         else:
             new = np.complex64.__new__(cl, v)
-            new._unit = parseunit(new.R, unit)
-        new.__init_unit__()            
+            new.__init_unit__(unit)            
         return new
 
     @staticmethod
@@ -358,89 +521,114 @@ class Qcomplex64(np.complex64):
 QuantityTypes.__register_type__(np.complex64, Qcomplex64)
 _prepare_quantity_class(Qcomplex64)
 
-#value2type_lookup.insert(0, (np.float64, np.float64, Float64) ) 
-#base.quantityclasses.append(Float64)
-
-
-class Qvoid(_quantity_shared, np.void):        
-    @staticmethod
-    def __tovalue__(v):
-        return np.dtype((np.void, v))
-
-class Qrecarray(np.recarray, _quantity_shared):    
-    def __new__(subtype, data_array, unit):
-        obj = np.asanyarray(data_array)
-        oview = type(obj)        
-        obj = obj.view(subtype)
-
-        if isinstance(unit, basestring):
-            obj._sameunit = True
-        else:
-            obj._sameunit = False
-            if len(unit) != len(obj.dtype):
-                raise ValueError("Number of array field is %d number of units is %s"%( len(obj.dtype),len(unit)))
-
-        obj._unit = unit        
-        obj._oview = oview
-        new.__init_unit__()
-        return obj
-    def __array_finalize__(self, obj):
-        if obj is None: return
-        #self.unit = getattr(obj, 'unit', "")
-        #self._ref_classes = (Qarray,)
+class Qvoid(_QuantityShared_, np.void):
+    def __new__(cl, data, unit):
+        #new = data.view(Qvoid)        
+        if not isinstance(data, np.void):
+            new = Qarray(np.asarray(data), unit)
+        else:             
+            new = data.view(Qarray)                
+            new.__init_unit__(unit)            
+        return new 
 
     def __getitem__(self, item):
-        sub = np.ndarray.__getitem__(self, item)
-        if self._sameunit:
-            unit = self.unit
-        else:
-            if isinstance(item, basestring):
-                try:
-                    i = self.dtype.names.index(item)
-                except ValueError:
-                    raise ValueError("no field of name %s"%item)
-                unit = self.unit[i]
-            else:
-                unit = self.unit             
+        obj = np.void.__getitem__(self, item)
+        unit = self.__unitoffield__(item)
+        return self.__qbuilder__(obj, unit)
+
+    __init_unit__ = Qarray.__init_unit__.im_func     
+
+    def __unitoffield__(self, item):
+        if isinstance(self._unit, basestring):
+            return self.unit
         try:
-            len(sub)
-        except TypeError:
-            return self.__qbuilder__(sub, unit)            
-        else:
-            return self.__qbuilder__(np.asarray(sub), unit)
-
-            
-    def __getslice__(self, a,b): 
-        sub = np.ndarray.__getslice__(self,a,b)       
-        return self.__qbuilder__(np.asarray(sub), self.unit)
-
-    # def __repr__(self):        
-    #     return self._oview.__repr__(self)
-    #     return np.asarray(self).__repr__()[0:-1]+", unit=%r)"%(self.unit)
+            i = self.dtype.names.index(item)
+        except ValueError:
+            raise ValueError("no field of name %s"%item)
+        return self.unit[i]       
 
     @staticmethod
+    def __tovalue__(v):        
+        return v.view(np.recarray)
+
+class Qrecord(_QuantityShared_, np.record):
+    def __new__(cl, data, unit):
+        #new = data.view(Qrecord)
+        if not isinstance(data, np.void):
+            new = Qarray(np.asarray(data), unit)
+        else:    
+            new = data.view(Qrecarray)        
+            # new = np.frombuffer( data.data, data.dtype)[0]
+            #new.__class__ = cl
+            new.__init_unit__(unit)                    
+        return new
+
+    __init_unit__ = Qarray.__init_unit__.im_func    
+        
+    @staticmethod
     def __tovalue__(v):
-        return np.asarray(v)
-    ## 
-    # not sure why but the operation as to 
-    # be copied here 
-    __mul__ = _quantity_shared.__mul__
-    __rmul__= _quantity_shared.__rmul__
-    __pow__ = _quantity_shared.__pow__
-    __add__ = _quantity_shared.__add__ 
-    __radd__= _quantity_shared.__radd__
-    __neg__ = _quantity_shared.__neg__
-    __pos__ = _quantity_shared.__pos__
-    #__mod__ = _quantity_shared.__mod__
-    #__rmod__= _quantity_shared.__rmod__
-    __sub__ = _quantity_shared.__sub__
-    __rsub__= _quantity_shared.__rsub__   
-    __div__ = _quantity_shared.__div__
-    __floordiv__ = _quantity_shared.__floordiv__
-    __rdiv__ = _quantity_shared.__rdiv__
-    __rfloordiv__ = _quantity_shared.__rfloordiv__
+        return v.view(np.recarray)
+
+    def __getitem__(self, item):
+        obj = np.void.__getitem__(self, item)
+        unit = self.__unitoffield__(item)
+        return self.__qbuilder__(obj, unit)
+
+    def __getattribute__(self, attr):        
+        try:
+            return object.__getattribute__(self, attr)
+        except AttributeError:  # attr must be a fieldname
+            pass
+        return self[attr]
+                            
+    def __unitoffield__(self, item):
+        unit = object.__getattribute__(self, "unit")
+        if isinstance(unit, basestring):
+            return unit
+        try:
+            i = object.__getattribute__(self,"dtype").names.index(item)
+        except ValueError:
+            raise ValueError("no field of name %s"%item)
+        return unit[i]       
 
 
+
+class Qrecarray(Qarray, np.recarray):
+    
+    #__getattr__ = np.recarray.__getattr__.im_func  
+    def __getitem__(self, item):
+        obj = np.recarray.__getitem__(self, item)        
+
+        if isinstance(item, basestring):
+            unit = self.__unitoffield__(item)
+        else:
+            unit = self.unit         
+        return self.__qbuilder__(obj, unit)          
+                  
+    def __getattribute__(self, attr):
+        # See if ndarray has this attr, and return it if so. (note that this
+        # means a field with the same name as an ndarray attr cannot be
+        # accessed by attribute).
+        try:
+            return object.__getattribute__(self, attr)
+        except AttributeError:  # attr must be a fieldname
+            pass
+        return self[attr]        
+
+    def __array_finalize__(self, obj):
+        if issubclass(self.dtype.type, np.void):  
+            if self.dtype.type is not Qrecord and self.dtype.fields:
+                object.__setattr__(self, "dtype", np.dtype((Qrecord, self.dtype)))                
+
+    def __unitoffield__(self, item):
+        unit = object.__getattribute__(self, "_unit")
+        if isinstance(unit, basestring):
+            return unit
+        try:
+            i = object.__getattribute__(self,"dtype").names.index(item)
+        except ValueError:
+            raise ValueError("no field of name %s"%item)
+        return unit[i] 
 
 def _parse_void(v):
     if isinstance(v,np.dtype):
@@ -452,20 +640,15 @@ def _parse_recarray(v):
         return 
     raise TypeError()    
 
-QuantityTypes.__register_type__(np.void, Qvoid)
+###
+# Record the array related calsses 
+# WARNING order is important and ndarray must be at the
+# end
 QuantityTypes.__register_type__(np.recarray, Qrecarray)
+QuantityTypes.__register_type__(np.record, Qrecord)
+QuantityTypes.__register_type__(np.void, Qvoid)
+
+### record the ndarray at the end
 QuantityTypes.__register_type__(np.ndarray, Qarray, parser=np.asarray)
-
-# value2type_lookup.insert(0, (np.void, _parse_void, Qvoid) ) 
-# base.quantityclasses.append(Qvoid)
-
-# value2type_lookup.insert(0, (np.recarray, _parse_recarray, Qrecarray) ) 
-# base.quantityclasses.insert(0, Qrecarray)
-
-# value2type_lookup.insert(0, (np.ndarray, np.asarray, Qarray) ) 
-# base.quantityclasses.insert(0, Qarray)
-
-
-
 
 

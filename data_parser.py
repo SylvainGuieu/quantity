@@ -1,11 +1,11 @@
 import math
-from .data_quantity import (K_NAME, K_PYTHON, K_DEFINITION, K_BASE, K_N, K_ULESS,
-                            U_NAME,  U_PRINT, U_PYTHON, U_LATEX, U_CI, U_KIND, U_M, U_DIM, U_DEFINITION, U_N,
+from .data_quantity import (K_NAME, K_PYTHON, K_DEFINITION, K_BASE, K_N, 
+                            U_NAME,  U_PRINT, U_PYTHON, U_LATEX, U_CI, U_KIND, U_M, U_DIM, U_DEFINITION, U_SYSTEM, U_N,
                             M_NAME, M_PRINT, M_PYTHON, M_LATEX, M_UC, M_SCALE, M_N,
-                            C_KINDS, C_TARGETS, C_PYTHON, C_N)
+                            C_KINDS, C_TARGETS, C_IU, C_OU, C_PYTHON, C_N)
 
 
-from .api2 import make_unit, make_kind, make_convertor, make_metrix
+from .api import make_unit, make_kind, make_convertor, make_metrix
 
 
 units_table = []
@@ -30,7 +30,8 @@ def parse_table2list(txt, L=None, N=2):
     """
     L = [] if L is None else L
     in_data = False
-    for i, line in enumerate(txt.split("\n"), start=1):
+    txt = unicode(txt)
+    for i, line in enumerate(txt.split("\n"), start=1):        
         line = line.strip()
 
         if in_data:
@@ -93,7 +94,7 @@ def process_kinds_table(R, tbl):
 
 
 def process_kind(R, info):    
-    make_kind(R, info[K_PYTHON], info[K_DEFINITION], info[K_BASE], name=info[K_NAME], unitless=info[K_ULESS] == "yes")
+    make_kind(R, info[K_PYTHON], info[K_DEFINITION], info[K_BASE], name=info[K_NAME])
    
 
 ######################################################################################
@@ -120,9 +121,11 @@ def process_units_table(R, tbl):
 def process_unit(R, info):
     make_unit(R, info[U_PYTHON], info[U_DEFINITION], info[U_KIND], 
                     dimension=int(info[U_DIM] or 1) ,
-                    metrix=info[U_M].lower()=="yes", 
-                    name=info[U_NAME], 
-                    prt=info[U_PRINT]
+                    metrix= info[U_M].lower()=="yes", 
+                    name  = info[U_NAME], 
+                    prt   = info[U_PRINT], 
+                    latex = info[U_LATEX], 
+                    system = info[U_SYSTEM]
             )
 
 
@@ -149,7 +152,7 @@ def process_convertors_table(R, tbl):
         process_convertor(R, info)
 
 def process_convertor(R, info):    
-    make_convertor(R, info[C_KINDS], info[C_TARGETS], info[C_PYTHON])    
+    make_convertor(R, info[C_KINDS], info[C_TARGETS], info[C_IU], info[C_OU], info[C_PYTHON])    
              
             
 

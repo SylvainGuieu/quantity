@@ -1,15 +1,15 @@
-from .api2 import (kindofunit, unitofunit, scaleofunit, 
-                  basescaleofunit,
+from .api import (kindofunit, unitofunit, scaleofunit, 
+                  basescaleofunit, dimensionsofunit,
                   printofunit,                                    
                   unitof, kindof, isunitless, valueof, 
                   scaleof, baseofunit, arekindconvertible, 
                   nameofunit, convert, 
-                  UnitError, 
-                  Registery
+                  UnitError, unitlist,
+                  Registery, unitcode, kindcode
                 )
+
 from .registery import QuantityTypes
-from . import units
-from . import kinds
+from string import Formatter
 
 __all__ = ["Qfloat", "Qint", "quantity", "Qany", "Unit"]
 
@@ -21,21 +21,35 @@ QTglobal = QuantityTypes(Rglobal)
 
 #########################################################
 
+def vectorize(func, val):
+    if hasattr(val, "__iter__"):
+        return map(func, val)
+    return func(val)
+
+def vectorizeR(func, R, val):
+    if hasattr(val, "__iter__"):
+        return map(lambda X:func(R,X), val)
+    return func(R, val)
+
+def _getunit(o):
+    if isinstance(o,basestring):
+        return o
+    return getattr(o, "unit", None)
 
 def getunit(o):
     """ return unit of object or None"""
-    #if not hasattr(o, "_value"):
-    #   return None
-    return getattr(o, "unit", None)
+    #if not hasattr(o, "value"):
+    #   return None    
+    return vectorize(_getunit, o)
 
 def getvalue(o):
-    return getattr(o, "_value", o)
+    return getattr(o, "value", o)
 
 def getkind(o):
     """ return kind of object or None"""
-    if not hasattr(o, "_value"):
-        return None    
-    return getattr(o, "kind", None)
+    if not hasattr(o, "unit"):
+        return None   
+    return kindofunit(o.unit)
 
 def same_kind_operation_setting(error, mode="drop"):
     """ Setup the behavior of addition or substraction of quantities wihout the same unit 
@@ -94,7 +108,7 @@ def same_kind_operation_setting(error, mode="drop"):
             unit = unitof(right)
             if error is "warning":
                 print("  unit will be '%s'"%unit)
-            return left.to(unitof(right))._value, right._value, unit
+            return left.to(unitof(right)).value, right.value, unit
 
     elif mode == "keep left":
         def same_kind(left, right):
@@ -102,7 +116,7 @@ def same_kind_operation_setting(error, mode="drop"):
             unit = unitof(left)
             if error is "warning":
                 print("  unit will be '%s'"%unit)
-            return left._value, right.to(unitof(left))._value, unit    
+            return left.value, right.to(unitof(left)).value, unit    
 
     elif mode == "keep lowest":
         def same_kind(left, right):
@@ -112,12 +126,12 @@ def same_kind_operation_setting(error, mode="drop"):
                 unit = unitof(right)
                 if error is "warning":
                     print("  unit will be '%s'"%unitof(right))
-                return left.to(unitof(right))._value, right._value, unit
+                return left.to(unitof(right)).value, right.value, unit
             else:
                 unit = unitof(left)                
                 if error is "warning":
                     print("  unit will be '%s'"%unit)
-                return left._value, right.to(unitof(left))._value, unit
+                return left.value, right.to(unitof(left)).value, unit
 
     elif mode == "keep highest":
         def same_kind(left, right):
@@ -127,12 +141,12 @@ def same_kind_operation_setting(error, mode="drop"):
                 unit = unitof(right)
                 if error is "warning":
                     print("  unit will be '%s'"%unit)
-                return left.to(unitof(right))._value, right._value, unit
+                return left.to(unitof(right)).value, right.value, unit
             else:
                 unit = unitof(left)
                 if error is "warning":
                     print("  unit will be '%s'"%unit)
-                return left._value, right.to(unitof(left))._value, unit
+                return left.value, right.to(unitof(left)).value, unit
 
     elif mode == "keep base":
         def same_kind(left, right):
@@ -142,12 +156,12 @@ def same_kind_operation_setting(error, mode="drop"):
                 unit = unitof(right)
                 if error is "warning":
                     print("  unit will be '%s'"%unit)
-                return left.to(unitof(right))._value, right._value, unit
+                return left.to(unitof(right)).value, right.value, unit
             else:
                 unit = unitof(left)
                 if error is "warning":
                     print("  unit will be '%s'"%unit)
-                return left._value, right.to(unitof(left))._value, unit    
+                return left.value, right.to(unitof(left)).value, unit    
 
 
     elif mode == "drop":            
@@ -155,7 +169,7 @@ def same_kind_operation_setting(error, mode="drop"):
             same_kind_msg(left, right)
             if error is "warning":
                     print("  unit is dropped")
-            return left._value, right._value, ''
+            return left.value, right.value, ''
     else:
         raise ValueError("mode '%s' invalid"%mode)        
 ####
@@ -313,27 +327,29 @@ def quantity(R, value=0.0, unit='', QT=QTglobal):
     if quantityclass is None:
         raise TypeError("incompatible type '%s' for quantity"%type(value))
           
-    if isinstance(unit, basestring):
-        unit = parsetrueunit(R, unit)
-    else:
-        unit = [parsetrueunit(R, u) for u in unit]
-    
-    if issubclass(quantityclass,Unit):
+    #if isinstance(unit, basestring):
+    #    unit = parsetrueunit(R, unit)
+    #else:
+    #    unit = [parsetrueunit(R, u) for u in unit]
+     
+    if issubclass(quantityclass,BaseUnit):
         return quantityclass(unit)          
+
     return quantityclass(value, unit)
 
 def clone(value, unit, QT=QTglobal):
     """ clone a value to a unitary quantity object with the given unit 
     and the class of value
     """
-    cl, _ = QT.get_quantity_class(getvalue(value))    
+    cl, v = QT.get_quantity_class(value)
+
     if cl is None:
         raise ValueError("Cannot make a quantity with value of type '%s'"%type(value))
 
     if hasattr(cl, "unitary_quantity"):
-        return cl.unitary_quantity(unit)
+        return v, cl.unitary_quantity(unit)
     else:        
-        return cl(1.0, unit)    
+        return v, cl(1.0, unit)    
 
 def parseunit(R, unit):
     return unit
@@ -342,7 +358,7 @@ def parseunit(R, unit):
     except UnitError:
         u = str(unit)        
     return u
-
+ 
 def parsetrueunit(R, unit):
     try:
         u, _ = unitofunit(R, unit)
@@ -355,116 +371,25 @@ def parentize(unit):
         return "(%s)"%unit
     return unit
 
+##################################################################
+#
+#   A quantity Formater 
+#
+##################################################################
+class QuantityFormatter(Formatter):
+    def convert_field(self, value, conversion):
+        if conversion=="U":
+            return value.unit
+        else:
+            return Formatter.convert_field(self, value, conversion)    
+quantityformatter = QuantityFormatter().format
+
 ######################################################################
 #
 # We define here the base quantity functions separatly because it appears
 # that subclassing in numpy.floatxx or numpy.intxx makes segmentation fault 11
 # 
 ######################################################################
-
-_shared_funcs = {}
-def new(self, value):
-    """ build a new quantity of same unit with new value """
-    return self.__class__(value, self.unit)  
-_shared_funcs["new"] = new
-del new
-
-
-def unit(self):
-    """ quantity unit """
-    return self._unit
-_shared_funcs["unit"] = property(unit)
-del unit
-
-def _value(self):
-    """ float representation of quantity """
-    return self.__tovalue__(self)
-_shared_funcs["_value"] = property(_value)
-del _value
-
-def unitname(self):
-    return nameofunit(self.R, self.unit)
-_shared_funcs["unitname"] = property(unitname)
-del unitname    
-
-def kind(self):
-    """ quantity kind value """
-    return kindofunit(self.R, self._unit)
-    #return self._kind
-_shared_funcs["kind"] = property(kind)
-del kind  
-
-def unitscale(self):
-    """ quantity scale compare to the base unit of its kind """
-    return basescaleofunit(self.R, self._unit)    
-_shared_funcs["unitscale"] = property(unitscale)
-del unitscale  
-
-def unitdimensions(self):
-    """ dimensions of unit """
-    return unitdimensions(self.R, self._unit)    
-_shared_funcs["unitdimensions"] = property(unitdimensions)
-del unitdimensions  
-
-
-def tobase(self):
-    """ quantity transform to its kind base unit """    
-    return self.to(self.baseunit)
-_shared_funcs["tobase"] = tobase
-del tobase  
-
-
-def unitary_quantity(cl, unit):
-    """ quantity scale value """
-    return cl(1.0, unit)
-_shared_funcs["unitary_quantity"] = classmethod(unitary_quantity)
-del unitary_quantity
-
-def baseunit(self):
-    """ The string unit coresponding to the base of its kind """
-    return baseofunit(self.R, self.unit)
-_shared_funcs["baseunit"] = property(baseunit)
-del baseunit
-
-def __init_unit__(self):
-    self.QT = self.QT()
-_shared_funcs["__init_unit__"] = __init_unit__
-del __init_unit__
-
-
-def to(self, newunit):
-    """ convert the quantity to a new unit e.g 'm' to 'km'"""
-    if not self._unit :
-        raise ValueError('quantity has no unit')
-    
-    if not isinstance(newunit, basestring):
-        newunit = getunit(newunit)
-        if newunit is None:
-            raise ValueError("new unit must be a string or must have the 'unit' atribute")
-
-    ## save sometime return self if the unit is unchanged
-    ## should not be a problem because self is un-mutable
-    if newunit == self._unit:
-        return self
-    return convert(self.R, self.__tovalue__(self), self.unit, newunit, 
-                   self.__class__ if not hasattr(self, "__qwrapper__") else self.__qwrapper__)
-
-#del to
-#####
-# test 
-
-class _UnitConverterProperty(object):
-    def __init__(self, unit):
-        self.unit = unit
-        self.__doc__ = "value converted to %s"%unit
-
-    def __get__(self, obj, cl=None):
-        if obj is None:
-            if cl:
-                return cl.__qbuilder__(1.0, self.unit)
-            return self    
-        return obj.to(self.unit)        
-
 
 class UnitConverterProperty(object):
     def __init__(self, unit):
@@ -482,86 +407,130 @@ class UnitConverterProperty(object):
         return convertor(self.unit)        
         #return obj.to(self.unit)     
 
-
-class UnitsCollection:
-    """ just a collection of attribute """
-    pass
-
-class KindsCollection:
-    pass
-
-
 class ConvertorInstance(object):
     def __init__(self, convertor, cl, obj):
         self.convertor = convertor
         self.cl  = cl
         self.obj = obj        
-            
+    
+    @property
+    def _register(self):
+        if self.obj is None:
+            return self.cl.QT().R
+        else:
+            return self.obj.QT().R    
+
     def __getitem__(self, item):
         if isinstance(item, tuple):
-            return (self(i) for i in item)
+            return list(self(i) for i in item)
         return self(item)
                         
-    def __call__(self, *args):
-
+    def __call__(self, *args, **kwargs):
         if len(args)>2:
             raise ValueError("to takes zero to two argument")
+        R = self._register
+
+        if len(args)==3:
+            system = args[-1]
+            args = args[:-1]
+            if "system" in kwargs:
+                raise TypeError("got multiple values for keyword argument 'system'")
+        system = kwargs.get("system", None)        
+                
         if not args:
             unit = None
         elif len(args)==2:
-            if issubclass(self.cl, Unit):
-                v,u = args
-                return quantity(self.cl.R, v, u, self.cl.QT())
+            v,u = args
+            if issubclass(self.cl, BaseUnit):                
+                return vectorize(lambda X: quantity(R, v, X, self.cl.QT()), u)
+                #return quantity(R, v, u, self.cl.QT())
             else:    
-                return self.cl(*args)        
+                return vectorize(lambda X: self.cl(v,X), u)
+                #return self.cl(*args)        
         else:
             unit, = args        
 
-                
+        
         if self.obj is None:
             if unit is None:
                 raise ValueError("provide a unit")
             elif not isinstance(unit, basestring):
+                
                 unit = getunit(unit)
+
                 if unit is None:
                     raise ValueError("new unit must be a string or must have the 'unit' atribute")
 
-            unit, _ = unitofunit(self.cl.R, unit or '')
+            #unit = vectorize(lambda X:unitofunit(R,X)[0], unit or '')
+            unit = vectorize(lambda X:X, unit or '')
             if hasattr(self.cl, "unitary_quantity"):
-                return self.cl.unitary_quantity(unit)
+                return vectorize(lambda X:self.cl.unitary_quantity(X), unit)
+                #return self.cl.unitary_quantity(unit)
             else:    
-                return self.cl(1.0, unit)
+                return vectorize(lambda X:self.cl(1.0,X), unit)#self.cl(1.0, unit)
 
-        if unit is None:
-            unit = self.obj.unit
-        elif not isinstance(unit, basestring):
-            unit = getunit(unit)
-            if unit is None:
-                raise ValueError("new unit must be a string or must have the 'unit' atribute")
-                
-        unit,_ = unitofunit(self.obj.R, unit)
-        if isinstance(self.obj, Unit):
-            return  to(self.obj.new(1.0), unit)
-        return to(self.obj, unit)
+        if unit is None and system is None:
+            unit = vectorize(lambda X:unitofunit(self.obj.R,X)[0], self.obj.unit)
+                    
+        #unit = vectorize(lambda X:unitofunit(self.obj.R,X)[0], unit)
+        
+        if isinstance(self.obj, BaseUnit):
+            return vectorize(lambda X:tofunc(self.obj.new(1.0),X), unit, system=system)
+            #return  tofunc(self.obj.new(1.0), unit)
+
+        return tofunc(self.obj, unit, system=system)
+
+    def __getattr__(self, attr):
+        return self.__call__(attr)
     
     def new(self, value, unit=None):
         if unit is None:
             if self.obj is None:
                 return self.cl(value)
-            unit, _ = unitofunit(self.obj.R, self.obj.unit) 
+            unit, _ = unitofunit(self._register, self.obj.unit) 
             return self.cl(value, unit)
                     
-        unit, _ = unitofunit(self.obj.R, unit)            
+        unit, _ = unitofunit(self._register, unit)            
         return self.cl(value, unit)
 
     @property
     def base(self):
         if self.obj is None:
             raise Exception("'to' called out of object context")
-        return self.__call__(baseofunit(self.obj.R, self.obj.unit))
-        
-    def __getattr__(self, attr):
-        return self.__call__(attr)        
+        return self.__call__(baseofunit(self._register, self.obj.unit))
+            
+    def import_units(self, setter, *args):       
+        units = []
+        if not len(args):
+            units = list(self.iterunits())
+        else:                            
+            for a in args:
+                units.extend(s.strip() for s in a.split(","))
+            
+        for u in units:
+            setter(u, self(u))
+        return units
+    
+    def import_units_of_kinds(self, setter, *args):
+        if not len(args):
+            return import_units(setter)
+        kinds = []    
+        for a in args:
+            kinds.extend(s.strip() for s in a.split(","))                     
+
+        units = []    
+        for kind in kinds:
+            for u in self.iterunits(kind):
+                units.append(u)
+                setter(u, self(u))
+        return units
+
+    def iterunits(self, kind=None):
+        return self._register.iterunits(kind)
+
+    def iterkinds(self):
+        return self._register.iterkinds()        
+
 
 class BaseConvertorInstance(ConvertorInstance):
     pass
@@ -575,340 +544,394 @@ class Convertor(object):
             return self    
         return self.Instance(self, type(obj), obj)
 
-################################
-_shared_funcs["to"] = Convertor()
-_shared_funcs["R"] = Rglobal
-
-_shared_funcs["_QTwr_"] = staticmethod(lambda :None)
-def QT(cl):
-    return cl._QTwr_() or QTglobal  
-_shared_funcs["QT"] = classmethod(QT)
-del QT
-
-def __mul__(left, right):
-    runit = getunit(right)
-    lunit = left.unit
-    lval = left._value
-    #if isinstance(right, tuple(left._ref_classes)):
-    if runit is not None:
-        try:
-            rval = right._value
-        except:
-            # this happen for units without value
-            return NotImplemented
-                                        
-        if left.unit:
-            v, unit = lval*rval, "%s*%s"%(lunit, right.unit)
-        else:
-            v, unit = lval*rval, "%s*%s"%(lval, right.unit)    
-    else:
-        if lunit:
-            v, unit = lval*right, "%s"%(lunit)
-        else:
-            v, unit = lval*right, ''
-    return left.__qbuilder__(v, unit)
-_shared_funcs["__mul__"] = __mul__
-del __mul__
-
-def __rmul__(right, left):       
-    #if isinstance(left, tuple(right._ref_classes)):
-    lunit = getunit(left)
-    runit = right.unit
-    rval  = right._value 
-    if lunit is not None:
-        try:
-            lval = left._value
-        except:
-            # this happen for units without value
-            return NotImplemented
-
-        if runit:
-            v, unit = lval*rval, "%s*%s"%(lunit, runit)
-        else:
-            v, unit = lval*rval, "%s*%s"%(lval, runit)    
-    else:
-        if runit:
-            v, unit = left*rval, "%s"%(runit)
-        else:
-            v, unit = left*rval, ''
-
-    return right.__qbuilder__(v, unit)     
-_shared_funcs["__rmul__"] = __rmul__
-del __rmul__
-
-# def __rmul__(right, left):        
-#     if right.unit:
-#         v, unit = left*right._value, right.unit
-#     else:
-#         v, unit = left*right._value, ''
-
-#     return right.__qbuilder__(v,unit)  
-
-def __pow__(self, exp):        
-    if self.unit:
-        sunit = parentize(self.unit)
-        v, unit = self._value**exp , "%s**%s"%(sunit, exp)        
-    else:
-        v, unit = self._value**exp , ''    
-
-    return self.__qbuilder__(v,unit)
-_shared_funcs["__pow__"] = __pow__
-del __pow__
-
-def __add__(self, right):
-    lv, rv, unit = _linear_op_prepare(self, right)
-    return self.__qbuilder__(lv+rv, unit)
-_shared_funcs["__add__"] = __add__
-del __add__
-
-
-def __radd__(self, left):
-    lv, rv, unit = _linear_op_prepare(left, self)
-    return self.__qbuilder__(lv+rv, unit)
-_shared_funcs["__radd__"] = __radd__
-del __radd__
-
-
-def __le__(self, right):    
-    lv, rv = _compare_op_prepare(self, right)
-    return lv<=rv    
-_shared_funcs["__le__"] = __le__
-del __le__
-
-
-def __lt__(self, right):    
-    lv, rv = _compare_op_prepare(self, right)
-    return lv<rv    
-_shared_funcs["__lt__"] = __lt__
-del __lt__
-
-def __ge__(self, right):    
-    lv, rv = _compare_op_prepare(self, right)
-    return lv>=rv    
-_shared_funcs["__ge__"] = __ge__
-del __ge__
-
-def __gt__(self, right):    
-    lv, rv = _compare_op_prepare(self, right)
-    return lv>rv    
-_shared_funcs["__gt__"] = __gt__
-del __gt__
-
-def __eq__(self, right):    
-    lv, rv = _compare_op_prepare(self, right)
-    return lv==rv    
-_shared_funcs["__eq__"] = __eq__
-del __eq__
-
-
-
-def __neg__(self):
-    return self.__qbuilder__( -self._value, self.unit)
-_shared_funcs["__neg__"] = __neg__
-del __neg__
-
-def __pos__(self):
-    return self
-_shared_funcs["__pos__"] = __pos__
-del __pos__    
-
-# def __mod__(self, m):
-#     lv, rv, unit = _linear_op_prepare(self, m)
-#     return self.__qbuilder__(lv%rv, unit)    
-# _shared_funcs["__mod__"] = __mod__
-# del __mod__
-
-
-# def __rmod__(self, m):
-#     lv, rv, unit = _linear_op_prepare(m, self)
-#     return self.__qbuilder__(lv%rv, unit)           
-# _shared_funcs["__rmod__"] = __rmod__
-# del __rmod__
+def tofunc(quantity, newunit, system=None):
+    """ convert the quantity to a new unit e.g 'm' to 'km'"""
+    if not quantity.unit :
+        raise ValueError('quantity has no unit')
     
-def __sub__(self, right):
-    lv, rv, unit = _linear_op_prepare(self, right)
-    return self.__qbuilder__(lv-rv, unit)
-_shared_funcs["__sub__"] = __sub__
-del __sub__
+    if not isinstance(newunit, basestring) and system is None:
+        #newunit = getunit(newunit)
+        #if newunit is None:
+        if hasattr(newunit, "unit"):
+            newunit = newunit.unit
+        elif hasattr(newunit, "__iter__"):
+            newunit = getunit(newunit)            
+        else:            
+            raise ValueError("new unit must be a string, a iterable or must have the 'unit' atribute got %s"%newunit)
 
+    ## save sometime return quantity if the unit is unchanged
+    ## should not be a problem because quantity is un-mutable
+    #if newunit == quantity.unit:
+    #    return quantity
 
-def __rsub__(self, left):
-    lv, rv, unit = _linear_op_prepare(left, self)
-    return self.__qbuilder__(lv-rv, unit)
-_shared_funcs["__rsub__"] = __rsub__
-del __rsub__
+    newcl =  quantity.__class__ if not hasattr(quantity, "__qwrapper__") else quantity.__qwrapper__    
 
-# def __div__(left, right):
-#     runit = getunit(right)
-#     if runit is not None:
-#     #if isinstance(right, tuple(left._ref_classes)):
-#         runit = right.unit
-#         runit = "(%s)"%runit if any(o in runit for o in "*/+-") else runit
-#         if left.unit:                
-#             v, unit = left._value/right._value, "%s/%s"%(left.unit, runit)
-#         else:
-#             v, unit = left._value/right._value, "%s/%s"%(left._value, runit)
-
-#     else:
-#         if left.unit:
-#             v, unit = left._value/right, "%s"%(left.unit)
-#         else:
-#             v, unit = left._value/right, ''
-
-#     return left.__qbuilder__(v,unit)    
-# _shared_funcs["__div__"] = __div__
-# del __div__
-
-def __div__(left, right):
-    runit = getunit(right)
-    lunit = parentize(left.unit)
-    lval = left._value
-
-    if runit is not None:        
-        runit = parentize(runit)
-
-        try:
-            rval = right._value
-        except:
-            # this happen for units without value
-            return NotImplemented
+    if hasattr(quantity, "__qconvertor__"):
+        return quantity.__qconvertor__(quantity.R, quantity.value, quantity.unit, newunit, system=system, inside=newcl)    
         
-        if lunit:
-            v, unit = lval/rval, "%s/%s"%(lunit, runit)
+    if hasattr(quantity.unit,"__iter__"):
+        return [convert(quantity.R, quantity.value, u, 
+                        newunit, inside=newcl) for u in quantity.unit]
+
+    return convert(quantity.R, quantity.__tovalue__(quantity), quantity.unit, newunit, system=system, inside=newcl)
+
+
+
+class _QuantityShared_:
+    to = Convertor()
+    R  = Rglobal
+
+
+    def inplace_convert(self,  unit):
+        raise ValueError("convert works only on mutable object")
+
+    @staticmethod
+    def _QTwr_():
+        return None
+
+    @classmethod    
+    def QT(cl):
+        return cl._QTwr_() or QTglobal        
+
+    def new(self, value):
+        """ build a new quantity of same unit with new value """
+        return self.__class__(value, self.unit) 
+
+    @property    
+    def unit(self):
+        """ quantity unit """
+        ## use __getattribute__ to avoid problems with 
+        ## too fancy objects 
+        #return object.__getattribute__(self, "_unit")
+        return self._unit
+
+    @property
+    def value(self):
+        """ float representation of quantity """
+        #return object.__getattribute__(self, "__tovalue__")(self)
+        return self.__tovalue__(self)
+
+    @property
+    def unitname(self):
+        return vectorizeR(nameofunit, self.R, self.unit)
+        return nameofunit(self.R, self.unit)
+    @property
+    def unitkind(self):
+        """ quantity unit kind value """
+        return vectorizeR(kindofunit, self.R, self.unit)
+        return kindofunit(self.R, self.unit)
+    @property    
+    def unitscale(self):
+        """ quantity scale compare to the base unit of its kind """
+        return vectorizeR(basescaleofunit, self.R, self.unit)        
+        return basescaleofunit(self.R, self.unit)    
+    @property      
+    def unitdimensions(self):
+        """ dimensions of unit """
+        return vectorizeR(dimensionsofunit, self.R, self.unit)        
+        return dimensionsofunit(self.R, self.unit)    
+
+    def tobase(self):
+        """ quantity transform to its kind base unit """
+        return vectorize(self.to, vectorizeR(baseofunit,self.R, self.unit))    
+        return self.to(self.unitbase)
+
+    @classmethod    
+    def unitary_quantity(cl, unit):
+        """ quantity scale value """
+        return vectorize(lambda X:cl(1.0,X), unit)
+        return cl(1.0, unit)
+    @property      
+    def unitbase(self):
+        """ The string unit coresponding to the base of its kind """
+        return vectorizeR(baseofunit,self.R, self.unit)
+        return baseofunit(self.R, self.unit)
+
+    def __init_unit__(self, unit):        
+        if isinstance(unit, basestring):
+            self._unit = unitcode(self.R, unit)
+        elif hasattr(unit, "unit"):
+            self._unit = unitcode(self.R, unit.unit)
         else:
-            v, unit = lval/rval, "%s/%s"%(lval, runit)    
-    else:
-        if lunit:
-            v, unit = lval/right, "%s"%(lunit)
+            raise ValueError("Expecting a string or an object with 'unit' attribute,  got %r"%unit)            
+
+    def __mul__(left, right):
+        runit = getattr(right, "unit", None)
+        lunit = left.unit
+        lval = left.value
+        #if isinstance(right, tuple(left._ref_classes)):
+        if runit:
+            try:
+                rval = right.value
+            except:
+                # this happen for units without value
+                return NotImplemented
+                                            
+            if left.unit:
+                v, unit = lval*rval, "%s*%s"%(lunit, right.unit)
+            else:
+                v, unit = lval*rval, "%s*%s"%(lval, right.unit)    
         else:
-            v, unit = lvalue/right, ''
-    return left.__qbuilder__(v, unit)
-_shared_funcs["__div__"] = __div__
-del __div__
+            rval = left.QT().parsevalue(right)
+            if lunit:
+                v, unit = lval*rval, "%s"%(lunit)
+            else:
+                v, unit = lval*rval, ''
+        return left.__qbuilder__(v, unit)
 
-def __floordiv__(left, right):
-    runit = getunit(right)
-    lunit = parentize(left.unit)
-    lval = left._value
+    def __rmul__(right, left):       
+        #if isinstance(left, tuple(right._ref_classes)):        
+        lunit = getattr(left, "unit", None)
+        runit = right.unit
+        rval  = right.value 
+        if lunit:
+            try:
+                lval = left.value
+            except:
+                # this happen for units without value
+                return NotImplemented
+            
 
-    if runit is not None:        
-        runit = parentize(runit)
+            if runit:
+                v, unit = lval*rval, "%s*%s"%(lunit, runit)
+            else:
+                v, unit = lval*rval, "%s*%s"%(lval, runit)    
+        else:
+            lval = right.QT().parsevalue(left)
+            if runit:
+                v, unit = lval*rval, "%s"%(runit)
+            else:
+                v, unit = lval*rval, ''
 
-        try:
-            rval = right._value
-        except:
-            # this happen for units without value
-            return NotImplemented
+        return right.__qbuilder__(v, unit)     
+
+    def __pow__(self, exp):        
+        if self.unit:
+            sunit = parentize(self.unit)
+            v, unit = self.value**exp , "%s**%s"%(sunit, exp)        
+        else:
+            v, unit = self.value**exp , ''    
+
+        return self.__qbuilder__(v,unit)
+
+
+    def __add__(self, right):
+        lv, rv, unit = _linear_op_prepare(self, right)
+        return self.__qbuilder__(lv+rv, unit)
+
+
+    def __radd__(self, left):
+        lv, rv, unit = _linear_op_prepare(left, self)
+        return self.__qbuilder__(lv+rv, unit)
+
+    def __le__(self, right):    
+        lv, rv = _compare_op_prepare(self, right)
+        return lv<=rv    
+
+
+    def __lt__(self, right):    
+        lv, rv = _compare_op_prepare(self, right)
+        return lv<rv    
+
+    def __ge__(self, right):    
+        lv, rv = _compare_op_prepare(self, right)
+        return lv>=rv    
+
+    def __gt__(self, right):    
+        lv, rv = _compare_op_prepare(self, right)
+        return lv>rv    
+
+    def __eq__(self, right):    
+        lv, rv = _compare_op_prepare(self, right)
+        return lv==rv    
+
+    def __neg__(self):
+        return self.__qbuilder__( -self.value, self.unit)
+
+    def __pos__(self):
+        return self
+
+    def __imul__(self, scl):
+        return self * scl
+
+    def __idiv__(self, scl):
+        return self / scl
+    
+    def __ifloordiv__(self, scl):
+        return self // scl        
+    
+
+    # def __mod__(self, m):
+    #     lv, rv, unit = _linear_op_prepare(self, m)
+    #     return self.__qbuilder__(lv%rv, unit)    
+    # _shared_funcs["__mod__"] = __mod__
+    # del __mod__
+
+
+    # def __rmod__(self, m):
+    #     lv, rv, unit = _linear_op_prepare(m, self)
+    #     return self.__qbuilder__(lv%rv, unit)           
+    # _shared_funcs["__rmod__"] = __rmod__
+    # del __rmod__
+    
+    def __sub__(self, right):
+        lv, rv, unit = _linear_op_prepare(self, right)
+        return self.__qbuilder__(lv-rv, unit)
+
+    def __rsub__(self, left):
+        lv, rv, unit = _linear_op_prepare(left, self)
+        return self.__qbuilder__(lv-rv, unit)
+
+    def __div__(left, right):
+        runit = getattr(right, "unit", None)
+        lunit = parentize(left.unit)
+        lval = left.value
+
+        if runit:        
+            runit = parentize(runit)
+
+            try:
+                rval = right.value
+            except:
+                # this happen for units without value
+                return NotImplemented
+            
+            if lunit:
+                v, unit = lval/rval, "%s/%s"%(lunit, runit)
+            else:
+                v, unit = lval/rval, "1/%s"%(runit)    
+        else:
+            rval = left.QT().parsevalue(right)
+            if lunit:
+                v, unit = lval/rval, "%s"%(lunit)
+            else:
+                v, unit = lvalue/rval, ''
+        print v, unit        
+        return left.__qbuilder__(v, unit)
+
+
+    def __floordiv__(left, right):
+        runit = getattr(right, "unit", None)
+        lunit = parentize(left.unit)
+        lval = left.value
+
+        if runit:        
+            runit = parentize(runit)
+
+            try:
+                rval = right.value
+            except:
+                # this happen for units without value
+                return NotImplemented
+            
+            if lunit:
+                v, unit = lval//rval, "%s/%s"%(lunit, runit)
+            else:
+                v, unit = lval//rval, "1/%s"%(runit)    
+        else:
+            rval = left.QT().parsevalue(right)
+            if lunit:
+                v, unit = lval//rval, "%s"%(lunit)
+            else:
+                v, unit = lvalue//rval, ''
+        return left.__qbuilder__(v, unit)
+
+
+    def __rdiv__(right, left):       
+        #if isinstance(left, tuple(right._ref_classes)):
+        lunit = getattr(left, "unit", None)
+        runit = parentize(right.unit)
+        rval  = right.value 
+        if lunit:
+            lunit = parentize(lunit)
+            try:
+                lval = left.value
+            except:
+                # this happen for units without value
+                return NotImplemented
+
+            if runit:
+                v, unit = lval/rval, "%s/%s"%(lunit, runit)
+            else:
+                v, unit = lval/rval, "%s"%(lunit)    
+        else:
+            lval = right.QT().parsevalue(left)
+            if runit:
+                v, unit = lval/rval, "1/%s"%(runit)
+            else:
+                v, unit = lval/rval, ''
+
+        return right.__qbuilder__(v, unit)     
+
+    def __rfloordiv__(right, left):       
+        #if isinstance(left, tuple(right._ref_classes)):
+        lunit = getattr(left, "unit", None)
+        runit = parentize(right.unit)
+        rval  = right.value 
+        if lunit:
+            lunit = parentize(lunit)
+            try:
+                lval = left.value
+            except:
+                # this happen for units without value
+                return NotImplemented
+
+            if runit:
+                v, unit = lval/rval, "%s/%s"%(lunit, runit)
+            else:
+                v, unit = lval/rval, "%s"%(lunit)    
+        else:
+            lval = right.QT().parsevalue(left)
+            if runit:
+                v, unit = lval/rval, "1/%s"%(runit)
+            else:
+                v, unit = lval/rval, ''
+
+        return right.__qbuilder__(v, unit)     
+
+    def __repr__(self):
+        return "%r %s"%(self.value, self.unit)    
+
+    def __str__(self):        
+            return "%r %s"%(self.value, printofunit(self.R,self.unit))    
+    
+
+    def __format__(self, format_spec):
+        if not format_spec:
+            return str(self.value)
+
+        U = format_spec[-1]
+        if U in ["U", "R", "N"]:            
+            format_spec = format_spec[:-1]
+            
+
+            if U == "U":
+                unit = printofunit(self.R, self.unit)
+            elif U == "N":
+                unit = nameofunit(self.R, self.unit)
+            else:
+                unit = self.unit
+
+            if format_spec:    
+                if unit:
+                    return "{:{format_spec}} {}".format(self.value, unit, format_spec=format_spec)
+                else:
+                    return "{:{format_spec}}".format(self.value, format_spec=format_spec)
+            else:
+                if unit:
+                    return "{}".format(unit, format_spec=format_spec)
+                else:
+                    return ""
+        else:
+            return "{:{format_spec}}".format(self.value, format_spec=format_spec)
+
+    @classmethod
+    def __qconvertor__(cl,R, value, unit, newunit=None, system=None, inside=None):
+        return convert(R, value, unit, newunit, system=system, inside=inside)
+
         
-        if lunit:
-            v, unit = lval//rval, "%s/%s"%(lunit, runit)
-        else:
-            v, unit = lval//rval, "%s/%s"%(lval, runit)    
-    else:
-        if lunit:
-            v, unit = lval//right, "%s"%(lunit)
-        else:
-            v, unit = lvalue//right, ''
-    return left.__qbuilder__(v, unit)
-_shared_funcs["__floordiv__"] = __floordiv__
-del __floordiv__
-
-
-
-def __rdiv__(right, left):       
-    #if isinstance(left, tuple(right._ref_classes)):
-    lunit = getunit(left)
-    runit = parentize(right.unit)
-    rval  = right._value 
-    if lunit is not None:
-        lunit = parentize(lunit)
-        try:
-            lval = left._value
-        except:
-            # this happen for units without value
-            return NotImplemented
-
-        if runit:
-            v, unit = lval/rval, "%s/%s"%(lunit, runit)
-        else:
-            v, unit = lval/rval, "%s/%s"%(lval, runit)    
-    else:
-        if runit:
-            v, unit = left/rval, "%s"%(runit)
-        else:
-            v, unit = left/rval, ''
-
-    return right.__qbuilder__(v, unit)     
-_shared_funcs["__rdiv__"] = __rdiv__
-del __rdiv__
-
-
-def __rfloordiv__(right, left):       
-    #if isinstance(left, tuple(right._ref_classes)):
-    lunit = getunit(left)
-    runit = parentize(right.unit)
-    rval  = right._value 
-    if lunit is not None:
-        lunit = parentize(lunit)
-        try:
-            lval = left._value
-        except:
-            # this happen for units without value
-            return NotImplemented
-
-        if runit:
-            v, unit = lval/rval, "%s/%s"%(lunit, runit)
-        else:
-            v, unit = lval/rval, "%s/%s"%(lval, runit)    
-    else:
-        if runit:
-            v, unit = left/rval, "%s"%(runit)
-        else:
-            v, unit = left/rval, ''
-
-    return right.__qbuilder__(v, unit)     
-_shared_funcs["__rfloordiv__"] = __rfloordiv__
-del __rfloordiv__
-
-
-
-
-
-
-
-def __repr__(self):
-    return "%r [%s]"%(self.__tovalue__(self), self.unit)    
-_shared_funcs["__repr__"] = __repr__
-del __repr__ 
-
-def __format__(self, format_spec):
-    U = format_spec[-1]
-    if U in ["U", "P"]:            
-        format_spec = format_spec[:-1]
-        if U == "U":
-            unit = printofunit(self.R, self._unit)
-        else:
-            unit = self._unit
-
-        if unit:
-            return "{:{format_spec}} [{}]".format(self._value, unit, format_spec=format_spec)
-        else:
-            return "{:{format_spec}}".format(self._value, format_spec=format_spec)    
-    else:
-        return "{:{format_spec}}".format(self._value, format_spec=format_spec)
-
-_shared_funcs["__format__"] = __format__
-del __format__
-
-def __qbuilder__(self, value, unit):
-    return quantity(self.R, value, unit, QT=self.QT())
-#_shared_funcs["__qbuilder__"] = staticmethod(quantity)
-_shared_funcs["__qbuilder__"] = __qbuilder__
-_shared_funcs["_unit"] = ""
-
-####
-# make a base class anyway 
-_quantity_shared = type("_quantity_shared", tuple(), _shared_funcs)
+    def __qbuilder__(self, value, unit):
+        return quantity(self.R, value, unit, QT=self.QT())
 
 def _prepare_quantity_class(cl):
     """ necessary to add the base func directly to the class and not adding 
@@ -918,26 +941,27 @@ def _prepare_quantity_class(cl):
     if not hasattr(cl, "__tovalue__"):
         raise ValueError("a quantity class must define a '__tovalue__' function")
 
+    _shared_funcs = dict(_QuantityShared_.__dict__)
+    for k in ["__module__", "__dict__", "__doc__", "__name__"]:
+        _shared_funcs.pop(k,None)
+
     for name, attr in _shared_funcs.iteritems():
         setattr(cl, name, attr)
 
-
-class Qfloat(_quantity_shared, float):     
+class Qfloat(_QuantityShared_, float):     
     def __new__(cl, value, unit):               
-        value = float.__new__(cl, value)        
-        value._unit = parseunit(cl.R, unit)
-        value.__init_unit__()
+        value = float.__new__(cl, value)
+        value.__init_unit__(unit)
         return value         
 
     @staticmethod
     def __tovalue__(v):
         return float(v)           
 
-class Qint(_quantity_shared, int):                
+class Qint(_QuantityShared_, int):                
     def __new__(cl, value, unit):    
-        value = int.__new__(cl, value)        
-        value._unit = parseunit(cl.R, unit)
-        value.__init_unit__()
+        value = int.__new__(cl, value)
+        value.__init_unit__(unit)
         return value       
 
     @staticmethod
@@ -949,18 +973,13 @@ def _parse_int(v):
         return 
     raise TypeError()
 
-class Qany(_quantity_shared, object):    
+class Qany(_QuantityShared_, object):    
     def __new__(cl, value, unit):
         return quantity(value, unit)
 
-class Unit(_quantity_shared, object):
+class BaseUnit(_QuantityShared_):
     """ A unit that does not hold value """    
-    def __new__(cl, unit):
-        new = object.__new__(cl)
-        new._unit = unit
-        new.__init_unit__()
-        return new
-
+    
     def __repr__(self):
         return "Unit('%s')"%self.unit
     
@@ -974,24 +993,26 @@ class Unit(_quantity_shared, object):
     @staticmethod    
     def __tovalue__(v):
         raise NotImplementedError("Not defined value type")    
-    
+       
     @property
-    def _value(self):
-        raise NotImplementedError("This unit has no defined value")
+    def value(self):
+        raise ValueError("This unit has no defined value")
          
     def __mul__(self, right):        
         if isinstance(right, self.__class__):            
             return self.__class__(parsetrueunit(self.R, "%s*%s"%(self.unit,right.unit)))
 
-        return clone(right, self.unit, QT=self.QT())*right        
-    
-    #def __rmul__(self, left):
-        return  NotImplemented
+        
+        right, left = clone(right, self.unit, QT=self.QT())            
+        return left*right        
+        
 
     def __rmul__(self, left):        
         if isinstance(left, self.__class__):
-            return self.__class__(parsetrueunit(self.R, "%s*%s"%(left.unit, self.unit)))        
-        return left*clone(left, self.unit, QT=self.QT())          
+            return self.__class__(parsetrueunit(self.R, "%s*%s"%(left.unit, self.unit)))
+        
+        left, right = clone(left, self.unit, QT=self.QT())                       
+        return left*right           
     
     def __pow__(self, exp):
         if isinstance(exp, self.__class__):                
@@ -1003,22 +1024,23 @@ class Unit(_quantity_shared, object):
     def __div__(self, right):        
         if isinstance(right, self.__class__):            
             return self.__class__(parsetrueunit(self.R, "%s/%s"%(parentize(self.unit),parentize(right.unit))))
-
-        return clone(right, self.unit, QT=self.QT())/right        
-    
+        right, left = clone(right, self.unit, QT=self.QT())    
+        return left/right        
+        
     #def __rmul__(self, left):
         return  NotImplemented
 
     def __rdiv__(self, left):        
         if isinstance(left, self.__class__):
             return self.__class__(parsetrueunit(self.R, "%s/%s"%(parentize(left.unit), parentize(self.unit))))        
-        return left/clone(left, self.unit, QT=self.QT())       
+        left, right = clone(left, self.unit, QT=self.QT())            
+        return left/right   
 
     def __floordiv__(self, right):        
         if isinstance(right, self.__class__):            
             return self.__class__(parsetrueunit(self.R, "%s/%s"%(parentize(self.unit),parentize(right.unit))))
-
-        return clone(right, self.unit, QT=self.QT())//right        
+        right, left = clone(right, self.unit, QT=self.QT())
+        return left//right        
     
     #def __rmul__(self, left):
         return  NotImplemented
@@ -1026,7 +1048,8 @@ class Unit(_quantity_shared, object):
     def __rfloordiv__(self, left):        
         if isinstance(left, self.__class__):
             return self.__class__(parsetrueunit(self.R, "%s/%s"%(parentize(left.unit), parentize(self.unit))))        
-        return left//clone(left, self.unit, QT=self.QT())           
+        left, right = clone(left, self.unit, QT=self.QT())                
+        return left//right           
 
     def __neg__(self):
         raise ValueError("-unit not allowed when unit is a quantity without value")
@@ -1034,20 +1057,21 @@ class Unit(_quantity_shared, object):
     def __rpow__(self, exp):        
         raise ValueError("x**unit not allowed ")
 
-    # def __add__(self, o):
-    #     raise ValueError("Cannot add or substract quantity unit without value")     
+    def __imul__(self, scl):
+        return self * scl
 
-    # def __sub__(self, o):
-    #     raise ValueError("Cannot add os substract unit without value")     
+    def __idiv__(self, scl):
+        return self / scl
     
-    # def __rsub__(self, o):
-    #     raise ValueError("Cannot add os substract unit without value")     
-      
-##  
-# the valid types for a quantity are recorded in this lookup  
-# the key is a parser __callable__ and item is the appropriate quantity class
-# if the parser raise a TypeError, try with the next one.
+    def __ifloordiv__(self, scl):
+        return self // scl        
+                
 
+class Unit(BaseUnit, object):
+    def __new__(cl, unit):
+        new = object.__new__(cl)
+        new.__init_unit__(unit)
+        return new   
 
 
 QuantityTypes.__register_type__(float,Qfloat)
