@@ -475,7 +475,7 @@ class ConvertorInstance(object):
         #unit = vectorize(lambda X:unitofunit(self.obj.R,X)[0], unit)
         
         if isinstance(self.obj, BaseUnit):
-            return vectorize(lambda X:tofunc(self.obj.new(1.0),X), unit, system=system)
+            return vectorize(lambda X:tofunc(self.obj.new(1.0),X,system=system), unit)
             #return  tofunc(self.obj.new(1.0), unit)
 
         return tofunc(self.obj, unit, system=system)
