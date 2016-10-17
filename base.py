@@ -604,6 +604,7 @@ class _QuantityShared_:
         ## too fancy objects 
         #return object.__getattribute__(self, "_unit")
         return self._unit
+        
 
     @property
     def value(self):

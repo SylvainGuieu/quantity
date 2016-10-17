@@ -1427,7 +1427,7 @@ def kindof(value):
     -------
     unit : string
     """
-    return getattr(value, "kind", None)
+    return getattr(value, "unitkind", None)
 
 def valueof(value):
     """ return value of a quantity or value itself
