@@ -8,9 +8,14 @@ __all__ = ["kindofunit", "scaleofunit", "unitofunit", "unitofscale", "hashofkind
             "baseofunit", "basescaleofunit", "baseofkind", "isunitof", "getkinds",
             "getunits", "arekindconvertible", "areunitconvertible", "linksofkind"
         ]
+from functools import reduce
 
+try:
+    unicode #python 2
+except NameError:
+    unicode = str #python 3
+    basestring = (str,bytes)
 
-##
 # This is the the global list available when unit or kind defintion 
 # are entered as a string 
 NoneUnit = ''#None
@@ -48,11 +53,18 @@ C_IU, C_OU, C_PYTHON = range(3)
 
 #from .parser import conv, fconv
 
+class KindError(ValueError):
+    pass
+
+
 def hrounder(h):    
     return round(h,33)
 
 class UnitError(NameError):
     pass    
+
+class KindError(NameError):
+    pass
 
 class BadOpError(SyntaxError):
     pass
@@ -89,11 +101,7 @@ operators = {
             }
 
 class Parser(object):
-    """ Parse a unit expression to its kind scale 
-
-    e.g. :  "m/s"  -> 1.0
-            "km/h" -> 3.6
-    """
+    """ Base class for unit expression parser """
     def __init__(self, R):
         # save the register
         self.R = R 
@@ -166,8 +174,15 @@ class Parser(object):
         return getattr(math, right)
 
 class ScaleParser(Parser):
+    """ Parse a unit expression to its scale 
+        
+        the scale is the multiplicative factor of the base unit
+    
+        e.g. :  "m/s"  -> 1.0
+                "km/h" -> 3.6
+    """
     def Name(self, name):
-        """ Name is the unit scale """
+        
         try:
             return self.R.unit_lookup[name][U_SCALE]    
         except KeyError as e:
@@ -767,7 +782,7 @@ class Registery(object):
             except KeyError:
                 return
             else:        
-                for u,i in self.unit_lookup.iteritems():            
+                for u,i in self.unit_lookup.items():            
                     if K is i[U_BASE][UB_K]: 
                         yield u     
         else:
@@ -1010,7 +1025,7 @@ def make_unit(R, unit, scale_or_definition, kind, dimension=1, metrix=False, nam
         callback(unit)
 
     if metrix:
-        for metrix_info in R.metrix_lookup.itervalues():
+        for metrix_info in R.metrix_lookup.values():
             make_metrix_unit(R, uinfo, metrix_info, callback)
                 
 def remove_unit(R, unit, callback=None):
@@ -1213,7 +1228,7 @@ def convert(R, value, unit1, unit2=None, system=None, inside=lambda x,u:x):
                     raise KindError("No system found for this kind")
                 else:
                     uscale = scaleofunit(R, unit1)
-                    keys = scale_lookup.keys()
+                    keys = list(scale_lookup.keys())
                     ##
                     ## One could take the scale the closest to the value, but sometime it ends up
                     ## to weird units like yoctoparsec ! 
@@ -1223,7 +1238,7 @@ def convert(R, value, unit1, unit2=None, system=None, inside=lambda x,u:x):
                     # diff, i = min((abs(uscale), idx) for (idx, s) in enumerate(keys))
                     # unit2 = scale_lookup[keys[i]][U_PYTHON]
                     ## better to take the base unit of the system                     
-                    for scale, U in scale_lookup.iteritems():
+                    for scale, U in scale_lookup.items():
                         if U[U_PYTHON] == U[U_BASE][UB_K][K_BASE]:
                             unit2 = scale_lookup[scale][U_PYTHON]
                             break
@@ -1427,7 +1442,7 @@ def kindof(value):
     -------
     unit : string
     """
-    return getattr(value, "kind", None)
+    return getattr(value, "unitkind", None)
 
 def valueof(value):
     """ return value of a quantity or value itself
@@ -1461,7 +1476,7 @@ def scaleof(R, value):
 
 def isunitless(value):
     """ return True is value is unitless
-
+    
     Parameter
     ---------
     value : numerical like, quantity
@@ -1516,7 +1531,7 @@ def unitsofkind(R, kind):
         K = R.kind_lookup[kind]
     except KeyError:
         return []                
-    return [k for k,i in R.unit_lookup.iteritems() if i[U_BASE][UB_K] is K]
+    return [k for k,i in R.unit_lookup.items() if i[U_BASE][UB_K] is K]
 
 def _printisize(s):
     return s
@@ -1826,7 +1841,7 @@ def getkinds(R):
     kinds : list of string  
         list of kind
     """
-    return R.kind_lookup.keys()
+    return list(R.kind_lookup.keys())
 
 def getunits(R):
     """ return a list of existing units 
@@ -1840,7 +1855,7 @@ def getunits(R):
     --------
     unitsofkind  : return a list of unit for a given kind only
     """
-    return R.unit_lookup.keys()
+    return list(R.unit_lookup.keys())
 
 def unitexist(R, unit):
     """ True is unit exist in the register
@@ -1882,8 +1897,12 @@ def metrixexist(R, metrix):
     """
     return metrix in R.metrix_lookup
 
+try:
+    __codesubcl__ = unicode # python 2
+except NameError:
+    __codesubcl__ = str
 
-class unitcode(unicode):
+class unitcode(__codesubcl__):
     def __new__(cl, R, u):
         self = unicode.__new__(cl, unicode(u).strip())
         self.R = R
@@ -1903,7 +1922,7 @@ class unitcode(unicode):
 
     @property
     def decompose(self):
-        return decomposeunit(self.R, self)
+        return decompose(self.R, self)
          
     @property
     def pow(self):
@@ -1933,7 +1952,7 @@ class unitcode(unicode):
     def dimensions(self):
         return dimensionsofunit(self.R, self)
 
-class metrixcode(unicode):
+class metrixcode(__codesubcl__):
     def __new__(cl, R, u):
         self = unicode.__new__(cl,unicode(u).strip())
         self.R = R
@@ -1955,7 +1974,7 @@ class metrixcode(unicode):
     def html(self):
         return htmlofmetrix(self.R, self) 
 
-class kindcode(unicode):
+class kindcode(__codesubcl__):
     def __new__(cl, R, u):
         self = unicode.__new__(cl,unicode(u).strip())
         self.R = R

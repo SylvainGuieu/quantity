@@ -1,16 +1,28 @@
+from __future__ import print_function
 import weakref
 from . import api
 
 
+def func_name(f):
+    try:
+        return f.func_name # python 2
+    except AttributeError:
+        return f.__name__
+
+def im_func(o):
+    try:
+        return o.im_func
+    except AttributeError:
+        return o.__func__
 
 def redoc(f):
-    f.__doc__ = getattr(api, f.func_name).__doc__
+    f.__doc__ = getattr(api, func_name(f)).__doc__
     return f
 
 def _get_class_attr(cl, attr):
     """ get a attribute with avoiding the __get__ method """
     for sub in cl.__mro__:
-        for key,val in sub.__dict__.iteritems():
+        for key,val in sub.__dict__.items():
             if key == attr:
                 return val
     raise AttributeError("type object '%s' has no attribute '%s'"%(cl.__name__, attr)) 
@@ -26,7 +38,7 @@ class UnitConverterProperty(object):
             if cl:
                 if hasattr(cl, "unitary_quantity"):
                     return cl.unitary_quantity(self.unit)
-                else:                    
+                else:                                  
                     return cl(1.0, self.unit)
             return self
         return convertor(self.unit)      
@@ -81,9 +93,9 @@ class QuantityTypes(object):
 
             toinstance = _get_class_attr(cl, "to").Instance
             for u in self.R.iterunits():
-                if not hasattr(toinstance, u):
+                #if not hasattr(toinstance, u):
                     setattr(toinstance, u, UnitConverterProperty(u))
-            toinstance.__init__.im_func.__doc__ = "go fuck yourself "
+            #im_func(toinstance.__init__).__doc__ = ""
 
     def __updateunit__(self, unit):
         if self.registered_quantity:

@@ -13,6 +13,11 @@ kinds_table = []
 metrix_table = []
 convertors_table = []
 
+try:
+    unicode #python 2
+except NameError:
+    unicode = str #python 3
+
 def parse_table2list(txt, L=None, N=2):
     """ parse a string definition table to a list of columns 
 

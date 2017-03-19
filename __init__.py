@@ -16,11 +16,11 @@ QTglobal.register_system_units()
 
 _G_= globals()
 for sub in QuantityTypes.__mro__:
-    for attr, _ in sub.__dict__.iteritems():
+    for attr, _ in sub.__dict__.items():
         if attr[0]!="_":
             _G_.setdefault(attr, getattr(QTglobal, attr))
             
-for attr, method in QTglobal.__dict__.iteritems():
+for attr, method in QTglobal.__dict__.items():
     if attr[0]!="_":
         _G_.setdefault(attr, method)
 

@@ -26,6 +26,11 @@ def parserecord(a):
     a.dtype.type == np.record
     return a
 
+def im_func(o):
+    try:
+        return o.im_func
+    except AttributeError:
+        return o.__func__
 
 class Unit(BaseUnit, np.ndarray):
     def __new__(cl, unit):
@@ -44,7 +49,22 @@ class Unit(BaseUnit, np.ndarray):
 QuantityTypes.__register_type__(type(None), Unit, replace=type(None))
 
 
-class Qarray(_QuantityShared_, np.ndarray):
+class _QaInit_:
+    def __init_unit__(self, unit):
+        if isinstance(unit, basestring):
+            if "," in unit:
+                self._unit = unitlist(unit.split(","))
+            else:                
+                self._unit = unitcode(self.R, unit)
+
+        elif hasattr(unit, "unit"):
+            self._unit = unitcode(self.R, unit.unit)
+        else:            
+            if not hasattr(unit, "__iter__"):
+                raise ValueError("Expecting a string, an object with 'unit' attribute or an iterable ,  got %r"%unit)                    
+            self._unit = unitlist(self.R, (u if isinstance(u, basestring) else u.unit for u in unit))
+
+class Qarray(_QuantityShared_, _QaInit_, np.ndarray):
     _unit = u''
     def __new__(subtype, data_array, unit=""):
         self = np.asanyarray(data_array)
@@ -72,19 +92,7 @@ class Qarray(_QuantityShared_, np.ndarray):
             if self.dtype.type is not Qvoid and self.dtype.fields:
                 self.dtype = np.dtype((Qvoid, self.dtype))       
 
-    def __init_unit__(self, unit):
-        if isinstance(unit, basestring):
-            if "," in unit:
-                self._unit = unitlist(unit.split(","))
-            else:                
-                self._unit = unitcode(self.R, unit)
 
-        elif hasattr(unit, "unit"):
-            self._unit = unitcode(self.R, unit.unit)
-        else:            
-            if not hasattr(unit, "__iter__"):
-                raise ValueError("Expecting a string, an object with 'unit' attribute or an iterable ,  got %r"%unit)                    
-            self._unit = unitlist(self.R, (u if isinstance(u, basestring) else u.unit for u in unit))
     
     def inplace_convert(self, unit, __scale__= None):
         if not self.shape:
@@ -521,7 +529,7 @@ class Qcomplex64(np.complex64):
 QuantityTypes.__register_type__(np.complex64, Qcomplex64)
 _prepare_quantity_class(Qcomplex64)
 
-class Qvoid(_QuantityShared_, np.void):
+class Qvoid(_QuantityShared_, _QaInit_, np.void):
     def __new__(cl, data, unit):
         #new = data.view(Qvoid)        
         if not isinstance(data, np.void):
@@ -535,9 +543,7 @@ class Qvoid(_QuantityShared_, np.void):
         obj = np.void.__getitem__(self, item)
         unit = self.__unitoffield__(item)
         return self.__qbuilder__(obj, unit)
-
-    __init_unit__ = Qarray.__init_unit__.im_func     
-
+    
     def __unitoffield__(self, item):
         if isinstance(self._unit, basestring):
             return self.unit
@@ -551,7 +557,7 @@ class Qvoid(_QuantityShared_, np.void):
     def __tovalue__(v):        
         return v.view(np.recarray)
 
-class Qrecord(_QuantityShared_, np.record):
+class Qrecord(_QuantityShared_, _QaInit_, np.record):
     def __new__(cl, data, unit):
         #new = data.view(Qrecord)
         if not isinstance(data, np.void):
@@ -563,8 +569,6 @@ class Qrecord(_QuantityShared_, np.record):
             new.__init_unit__(unit)                    
         return new
 
-    __init_unit__ = Qarray.__init_unit__.im_func    
-        
     @staticmethod
     def __tovalue__(v):
         return v.view(np.recarray)
@@ -595,7 +599,6 @@ class Qrecord(_QuantityShared_, np.record):
 
 class Qrecarray(Qarray, np.recarray):
     
-    #__getattr__ = np.recarray.__getattr__.im_func  
     def __getitem__(self, item):
         obj = np.recarray.__getitem__(self, item)        
 

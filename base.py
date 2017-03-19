@@ -1,3 +1,4 @@
+from __future__ import print_function
 from .api import (kindofunit, unitofunit, scaleofunit, 
                   basescaleofunit, dimensionsofunit,
                   printofunit,                                    
@@ -12,6 +13,11 @@ from .registery import QuantityTypes
 from string import Formatter
 
 __all__ = ["Qfloat", "Qint", "quantity", "Qany", "Unit"]
+try:
+    unicode #python 2
+except NameError:
+    unicode = str #python 3
+    basestring = (str,bytes)
 
 Rglobal = Registery()
 Rglobal.__isglobal__ = True
@@ -22,13 +28,17 @@ QTglobal = QuantityTypes(Rglobal)
 #########################################################
 
 def vectorize(func, val):
+    if isinstance(val, basestring):
+        return func(val)
     if hasattr(val, "__iter__"):
-        return map(func, val)
+        return list(map(func, val))
     return func(val)
 
 def vectorizeR(func, R, val):
+    if isinstance(val, basestring):
+        return func(R, val)
     if hasattr(val, "__iter__"):
-        return map(lambda X:func(R,X), val)
+        return list(map(lambda X:func(R,X), val))
     return func(R, val)
 
 def _getunit(o):
@@ -217,7 +227,10 @@ def unitless_operation_setting(error, mode="drop"):
     elif error == "warning":
         def unitless_kind_msg(left, right):
             print("Warning: Adding or substracting %s with  %s"%(kindof(left)or'unitless', kindof(right)or'unitless'))
-    
+    else:
+        def unitless_kind_msg(left, right):
+            return 
+            
     if mode is "keep":
         def unitless_kind(left, right):
                 unitless_kind_msg(left, right)            
@@ -227,7 +240,7 @@ def unitless_operation_setting(error, mode="drop"):
             unitless_kind_msg(left, right)
             return valueof(left), valueof(right), ''
 
-unitless_operation_setting("warning", "drop")            
+unitless_operation_setting("silent", "drop")            
 
 ##########################################################
 def _linear_op_prepare(left, right):
@@ -408,7 +421,7 @@ class UnitConverterProperty(object):
         #return obj.to(self.unit)     
 
 class ConvertorInstance(object):
-    def __init__(self, convertor, cl, obj):
+    def __init__(self, convertor, cl, obj):        
         self.convertor = convertor
         self.cl  = cl
         self.obj = obj        
@@ -475,7 +488,7 @@ class ConvertorInstance(object):
         #unit = vectorize(lambda X:unitofunit(self.obj.R,X)[0], unit)
         
         if isinstance(self.obj, BaseUnit):
-            return vectorize(lambda X:tofunc(self.obj.new(1.0),X), unit, system=system)
+            return vectorize(lambda X,system=system:tofunc(self.obj.new(1.0),X,system=system), unit)
             #return  tofunc(self.obj.new(1.0), unit)
 
         return tofunc(self.obj, unit, system=system)
@@ -805,10 +818,10 @@ class _QuantityShared_:
             if lunit:
                 v, unit = lval/rval, "%s"%(lunit)
             else:
-                v, unit = lvalue/rval, ''
-        print v, unit        
+                v, unit = lvalue/rval, ''           
         return left.__qbuilder__(v, unit)
 
+    __truediv__ = __div__
 
     def __floordiv__(left, right):
         runit = getattr(right, "unit", None)
@@ -945,7 +958,7 @@ def _prepare_quantity_class(cl):
     for k in ["__module__", "__dict__", "__doc__", "__name__"]:
         _shared_funcs.pop(k,None)
 
-    for name, attr in _shared_funcs.iteritems():
+    for name, attr in _shared_funcs.items():
         setattr(cl, name, attr)
 
 class Qfloat(_QuantityShared_, float):     
@@ -1025,10 +1038,12 @@ class BaseUnit(_QuantityShared_):
         if isinstance(right, self.__class__):            
             return self.__class__(parsetrueunit(self.R, "%s/%s"%(parentize(self.unit),parentize(right.unit))))
         right, left = clone(right, self.unit, QT=self.QT())    
-        return left/right        
+        return left/right    
+
+    __truediv__ = __div__    
         
     #def __rmul__(self, left):
-        return  NotImplemented
+    #    return  NotImplemented
 
     def __rdiv__(self, left):        
         if isinstance(left, self.__class__):
